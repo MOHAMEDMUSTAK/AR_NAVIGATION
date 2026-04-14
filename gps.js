@@ -165,7 +165,14 @@ window.GPS = {
         let dt = (now - (this.lastDRTime || this.lastUpdateTime)) / 1000;
         this.lastDRTime = now;
         if (dt <= 0 || dt > 2) return;
-        const hr = this.smoothHeading * Math.PI / 180, dist = this.speed * dt, R = 6378137;
+        
+        // Physics IMU integration: Add raw hardware acceleration (v = u + at)
+        let physSpeed = this.speed;
+        if (this.recentIMUAccel && this.recentIMUAccel > 0.5) {
+            physSpeed += (this.recentIMUAccel * dt * 0.6); 
+        }
+
+        const hr = this.smoothHeading * Math.PI / 180, dist = physSpeed * dt, R = 6378137;
         this.currentLat += (dist * Math.cos(hr)) / R * (180 / Math.PI);
         this.currentLon += (dist * Math.sin(hr)) / (R * Math.cos(this.currentLat * Math.PI / 180)) * (180 / Math.PI);
         this.updateUI();
@@ -186,6 +193,10 @@ window.GPS = {
 
                 this.accelSamples.push(mag);
                 if (this.accelSamples.length > 20) this.accelSamples.shift();
+
+                // Advanced IMU Physics
+                if (!this.recentIMUAccel) this.recentIMUAccel = 0;
+                this.recentIMUAccel = this.recentIMUAccel * 0.8 + mag * 0.2;
 
                 // If average deviation from gravity is high = rough road
                 if (this.accelSamples.length >= 15 && this.roughRoadCooldown <= 0) {

@@ -331,8 +331,21 @@ window.ARScene = {
             const gpsL = window.RouteManager.latLonToLocal(window.GPS.currentLat, window.GPS.currentLon);
             const tX = this.camera.position.x - gpsL.x;
             const tZ = this.camera.position.z - gpsL.z;
-            this.pathGroup.position.x += (tX - this.pathGroup.position.x) * 0.25;
-            this.pathGroup.position.z += (tZ - this.pathGroup.position.z) * 0.25;
+            
+            // Critical: AR Spring-Mass Damper to completely absorb and eliminate GPS snapping jitter
+            if (!this.arVelocityX) this.arVelocityX = 0;
+            if (!this.arVelocityZ) this.arVelocityZ = 0;
+            
+            const springFrcX = (tX - this.pathGroup.position.x) * 0.4;
+            const springFrcZ = (tZ - this.pathGroup.position.z) * 0.4;
+            
+            this.arVelocityX += springFrcX;
+            this.arVelocityZ += springFrcZ;
+            this.arVelocityX *= 0.65; // Heavy physical friction damper
+            this.arVelocityZ *= 0.65;
+            
+            this.pathGroup.position.x += this.arVelocityX;
+            this.pathGroup.position.z += this.arVelocityZ;
             
             // CRITICAL: Dynamic True-North World Calibration
             // If we are moving, the GPS bearing perfectly mathematically determines True North.

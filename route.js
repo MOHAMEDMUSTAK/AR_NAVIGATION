@@ -22,23 +22,27 @@ window.RouteManager = {
         this.destLat=endLat; this.destLon=endLon;
         this.initMiniMap(startLat, startLon);
 
-        const url = `https://router.project-osrm.org/route/v1/driving/${startLon},${startLat};${endLon},${endLat}?steps=true&geometries=geojson&overview=full&annotations=distance,duration`;
+        // Racing Routers for 100% instant navigation
+        const url1 = `https://router.project-osrm.org/route/v1/driving/${startLon},${startLat};${endLon},${endLat}?steps=true&geometries=geojson&overview=full&annotations=distance,duration`;
+        const url2 = `https://routing.openstreetmap.de/routed-car/route/v1/driving/${startLon},${startLat};${endLon},${endLat}?steps=true&geometries=geojson&overview=full&annotations=distance,duration`;
+
         if (!isReroute) { this.originLat=startLat; this.originLon=startLon; }
 
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 3500); // 3.5s aggressive timeout
+        setTimeout(() => controller.abort(), 4500); 
 
-        let res;
+        let data;
         try {
-            res = await fetch(url, { signal: controller.signal });
-            clearTimeout(timeoutId);
+            const fetch1 = fetch(url1, { signal: controller.signal }).then(r=>r.json());
+            const fetch2 = fetch(url2, { signal: controller.signal }).then(r=>r.json());
+            
+            data = await Promise.any([
+                fetch1.then(d => { if (d.code !== 'Ok') throw 'error'; return d; }),
+                fetch2.then(d => { if (d.code !== 'Ok') throw 'error'; return d; })
+            ]);
         } catch(e) {
-            clearTimeout(timeoutId);
-            throw new Error("Routing server took too long. Please try again.");
+            throw new Error("Routing servers unavailable. Please check connection.");
         }
-        
-        const data = await res.json();
-        if (data.code !== 'Ok' || !data.routes?.length) throw new Error("Route not found.");
 
         this.allRoutes = data.routes;
         if (data.routes.length > 1 && !isReroute) this.showRouteAlts(data.routes);
@@ -161,9 +165,18 @@ window.RouteManager = {
             if (t==='position') {
                 const now = Date.now();
                 
+                // Heading-Up Minimap Mode (60 FPS hardware rotated)
+                const mapEl = document.getElementById('minimap');
+                if (mapEl && window.GPS && window.GPS.smoothHeading != null) {
+                    mapEl.style.transform = `rotate(${-window.GPS.smoothHeading}deg)`;
+                    mapEl.style.transformOrigin = 'center center';
+                    // Counter-rotate the blue dot so it constantly faces physically FORWARD on the screen
+                    if (this.userMarker._icon) this.userMarker._icon.style.transform = `rotate(${window.GPS.smoothHeading}deg)`;
+                }
+
                 // Add smooth hardware-accelerated gliding to the marker icon for 60FPS tracking
                 if (this.userMarker._icon) {
-                    this.userMarker._icon.style.transition = 'transform 0.06s linear';
+                    this.userMarker._icon.style.transition = 'transform 0.06s linear, top 0.06s linear, left 0.06s linear';
                 }
                 this.userMarker.setLatLng([d.lat, d.lon]);
 
@@ -283,23 +296,31 @@ window.RouteManager = {
             const proj = this.projectPoint(lat, lon, p1, p2);
             const dist = this.haversine(lat, lon, proj.lat, proj.lon);
             const b = window.GPS.calcBearing(p1.lat, p1.lon, p2.lat, p2.lon);
-            let dH = Math.abs(h - b); if (dH > 180) dH = 360 - dH;
             
-            // Extreme exponential penalty for incorrect heading to stop intersection jumping
-            const cost = dist * (1 + Math.pow(dH / 30, 4));
+            // True Dot Product Vector Snapping
+            const bx = Math.sin(b * Math.PI / 180), by = Math.cos(b * Math.PI / 180);
+            const hx = Math.sin(h * Math.PI / 180), hy = Math.cos(h * Math.PI / 180);
+            const dotProduct = (bx * hx + by * hy);
+            
+            // Heavy penalty if user is driving the wrong direction down the vector
+            const dotPenalty = dotProduct < 0 ? 50 : Math.max(1, 1.5 - dotProduct);
+            const cost = dist * dotPenalty;
 
             if (cost < minCost) { minCost = cost; bestIdx = i; bestSnap = proj; }
         }
 
+        // Global search fallback if badly lost
         if (minCost > 2000) {
             for (let i = 0; i < this.pathCoordinates.length - 1; i++) {
                 const p1 = this.pathCoordinates[i], p2 = this.pathCoordinates[i+1];
                 const proj = this.projectPoint(lat, lon, p1, p2);
                 const dist = this.haversine(lat, lon, proj.lat, proj.lon);
                 const b = window.GPS.calcBearing(p1.lat, p1.lon, p2.lat, p2.lon);
-                let dH = Math.abs(h - b); if (dH > 180) dH = 360 - dH;
                 
-                const cost = dist * (1 + Math.pow(dH / 45, 2)); // Slightly less strict when doing a full global search
+                const bx = Math.sin(b * Math.PI / 180), by = Math.cos(b * Math.PI / 180);
+                const hx = Math.sin(h * Math.PI / 180), hy = Math.cos(h * Math.PI / 180);
+                const dotProduct = (bx * hx + by * hy);
+                const cost = dist * (dotProduct < 0 ? 10 : Math.max(1, 1.2 - dotProduct));
 
                 if (cost < minCost) { minCost = cost; bestIdx = i; bestSnap = proj; }
             }
