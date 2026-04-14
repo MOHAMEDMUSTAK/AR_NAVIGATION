@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>AstraNav AR — Next-Gen Navigation</title>
+    <meta name="description" content="AstraNav AR: AI-powered navigation with obstacle detection, voice commands, weather alerts, trip stats, and real 3D AR navigation.">
+    <meta name="theme-color" content="#0a0f1e">
+    <link rel="manifest" href="manifest.json">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="AstraNav">
+    <link rel="apple-touch-icon" href="icon.svg">
+    <link rel="icon" href="icon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="style.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+</head>
+<body>
+
+    <!-- Live Camera -->
+    <video id="camera-feed" autoplay playsinline muted></video>
+    <canvas id="ai-overlay"></canvas>
+    <div id="ar-container"></div>
+
+    <!-- Obstacle Warning -->
+    <div id="obstacle-warning" class="obstacle-hidden">
+        <div class="obstacle-alert">
+            <span class="obstacle-icon">⚠️</span>
+            <span class="obstacle-text" id="obstacle-detail">Obstacle ahead</span>
+        </div>
+    </div>
+
+    <!-- Speed Warning -->
+    <div id="speed-warning" class="speed-warn-hidden">
+        <div class="speed-warn-inner">🚨 Slow Down!</div>
+    </div>
+
+    <!-- Road Quality Alert -->
+    <div id="road-quality" class="rq-hidden">
+        <span id="rq-text">⚡ Rough Road</span>
+    </div>
+
+    <!-- Weather Banner -->
+    <div id="weather-banner" class="weather-hidden">
+        <span id="weather-icon">☀️</span>
+        <span id="weather-text">Clear</span>
+        <span id="weather-temp">--°C</span>
+    </div>
+
+    <!-- TOP HUD (Sygic-style) -->
+    <div id="top-hud" class="nav-hidden">
+        <div class="hud-top-bar">
+            <div class="hud-left">
+                <div id="turn-arrow-2d" class="hud-arrow-icon arrow-straight"></div>
+                <div class="turn-info">
+                    <span id="turn-dist" class="turn-dist-text">--</span>
+                    <span class="hud-dot">•</span>
+                    <span id="road-name" class="road-name-text">--</span>
+                </div>
+            </div>
+            <div class="hud-right">
+                <span id="top-time">--:--</span>
+                <div class="battery-wrapper">
+                    <div class="battery-body">
+                        <div id="battery-level-fill"></div>
+                    </div>
+                    <div class="battery-tip"></div>
+                </div>
+            </div>
+        </div>
+        <!-- Central Floating Turn Badge -->
+        <div class="top-center-badge">
+            <div class="badge-ring">
+                <div id="badge-arrow" class="mega-arrow arrow-straight"></div>
+            </div>
+        </div>
+        <div id="lane-guidance" class="lane-hidden"></div>
+    </div>
+
+    <!-- Bottom-Left: Audio + Speed -->
+    <div id="bottom-left-container" class="nav-hidden">
+        <button id="enable-audio-btn" class="audio-floating-btn">🔊</button>
+        <div id="speed-display">
+            <span id="speed-value">0</span>
+            <span class="speed-unit">km/h</span>
+        </div>
+    </div>
+
+    <!-- Bottom-Right: Minimap + ETA -->
+    <div id="bottom-right-container" class="nav-hidden">
+        <div id="minimap-wrapper">
+            <div class="minimap-dashed-border"></div>
+            <div id="minimap"></div>
+        </div>
+        <div class="bottom-time-pill">
+            <span id="bottom-time">--:--</span>
+            <span class="hud-dot">·</span>
+            <span id="remaining-time">-- min</span>
+        </div>
+    </div>
+
+    <!-- Fullscreen Map -->
+    <div id="fullscreen-map-overlay" class="fullmap-closed">
+        <div id="fullscreen-map-header">
+            <h2>Route Overview</h2>
+            <button id="close-fullmap-btn" class="close-btn">✕</button>
+        </div>
+        <div id="fullscreen-map"></div>
+    </div>
+
+    <!-- Route Alternatives -->
+    <div id="route-alternatives-panel" class="alt-hidden"></div>
+
+    <!-- Quick Options (Right) -->
+    <div id="map-options" class="nav-hidden">
+        <button id="toggle-voice-btn" class="opt-btn" title="Voice">🔊</button>
+        <button id="recenter-btn" class="opt-btn" title="Recenter">📍</button>
+        <button id="share-btn" class="opt-btn" title="Share">📤</button>
+        <button id="park-btn" class="opt-btn" title="Park Here">🅿️</button>
+        <button id="sos-btn" class="opt-btn opt-sos" title="Emergency">🆘</button>
+    </div>
+
+    <!-- Trip Dashboard (Swipe up from bottom) -->
+    <div id="trip-dashboard" class="trip-hidden glass-panel">
+        <div class="trip-handle"></div>
+        <h3>Trip Stats</h3>
+        <div class="trip-grid">
+            <div class="trip-stat">
+                <span class="trip-val" id="trip-distance">0</span>
+                <span class="trip-label">km traveled</span>
+            </div>
+            <div class="trip-stat">
+                <span class="trip-val" id="trip-duration">0:00</span>
+                <span class="trip-label">duration</span>
+            </div>
+            <div class="trip-stat">
+                <span class="trip-val" id="trip-avg-speed">0</span>
+                <span class="trip-label">avg km/h</span>
+            </div>
+            <div class="trip-stat">
+                <span class="trip-val" id="trip-max-speed">0</span>
+                <span class="trip-label">max km/h</span>
+            </div>
+        </div>
+        <button id="trip-close-btn" class="glow-btn trip-close">Close</button>
+    </div>
+
+    <!-- Parking Saved Toast -->
+    <div id="park-toast" class="toast toast-hidden">📍 Parking spot saved!</div>
+
+    <!-- SOS Modal -->
+    <div id="sos-modal" class="sos-hidden">
+        <div class="sos-inner glass-panel">
+            <h2>🆘 Emergency</h2>
+            <p id="sos-location">Location: loading...</p>
+            <a id="sos-call" href="tel:112" class="glow-btn sos-call-btn">📞 Call Emergency</a>
+            <button id="sos-share" class="glow-btn sos-share-btn">📤 Share Location</button>
+            <button id="sos-close" class="close-btn sos-close-btn">✕</button>
+        </div>
+    </div>
+
+    <!-- Input Screen -->
+    <div id="input-screen">
+        <div id="input-modal" class="modal glass-panel">
+            <div class="modal-glow"></div>
+            <h1>AstraNav AR</h1>
+            <p class="modal-subtitle">AI-Powered • AR Navigation • Real-Time</p>
+            <div class="input-group">
+                <div class="search-wrapper">
+                    <span class="search-icon">🔍</span>
+                    <input type="text" id="dest-address" placeholder="Where to?" autocomplete="off" />
+                    <button id="voice-input-btn" class="voice-btn" title="Voice Input">🎤</button>
+                </div>
+                <div id="search-suggestions" class="suggestions-hidden"></div>
+            </div>
+            <div id="recent-destinations" class="recent-hidden">
+                <p class="recent-label">Recent</p>
+                <div id="recent-list"></div>
+            </div>
+            <!-- Parked Car Shortcut -->
+            <div id="parked-car" class="parked-hidden">
+                <button id="go-to-car-btn" class="glow-btn parked-btn">🚗 Navigate to My Car</button>
+            </div>
+            <button id="start-btn" class="glow-btn start-btn">
+                <span class="btn-text">Start Navigation</span>
+                <span class="btn-loader btn-loader-hidden"><span class="spinner"></span> Initializing...</span>
+            </button>
+            <div class="feature-pills">
+                <span class="pill">🧠 AI Detection</span>
+                <span class="pill">🎤 Voice Control</span>
+                <span class="pill">🌦️ Weather</span>
+                <span class="pill">📊 Trip Stats</span>
+            </div>
+            <p class="disclaimer">GPS · Camera · Microphone required</p>
+        </div>
+    </div>
+
+    <script src="gps.js"></script>
+    <script src="route.js"></script>
+    <script src="ar.js"></script>
+    <script src="app.js"></script>
+
+    <script>
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+                navigator.serviceWorker.register('service-worker.js')
+                    .then(registration => {
+                        console.log('ServiceWorker registration successful with scope: ', registration.scope);
+                    }, err => {
+                        console.log('ServiceWorker registration failed: ', err);
+                    });
+            });
+        }
+    </script>
+</body>
+</html>
