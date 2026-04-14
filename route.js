@@ -161,16 +161,15 @@ window.RouteManager = {
             if (t==='position') {
                 const now = Date.now();
                 
-                // Add smooth hardware-accelerated gliding to the marker icon
+                // Add smooth hardware-accelerated gliding to the marker icon for 60FPS tracking
                 if (this.userMarker._icon) {
-                    this.userMarker._icon.style.transition = 'transform 0.1s linear';
+                    this.userMarker._icon.style.transition = 'transform 0.06s linear';
                 }
                 this.userMarker.setLatLng([d.lat, d.lon]);
 
-                // Throttle the heavy map panning to strictly 1 FPS to prevent main-thread lag
-                // Letting Leaflet handle exactly one smooth animation per second
-                if (!this.lastMapPan || now - this.lastMapPan >= 1000) {
-                    this.mapInstance.setView([d.lat, d.lon], 16, { animate: true, duration: 0.8 });
+                // Fluid Google-Maps style camera locking. Pan efficiently every 333ms to match UI thread without stuttering
+                if (!this.lastMapPan || now - this.lastMapPan >= 333) {
+                    this.mapInstance.panTo([d.lat, d.lon], { animate: true, duration: 0.35, easeLinearity: 1 });
                     this.lastMapPan = now;
                 }
 

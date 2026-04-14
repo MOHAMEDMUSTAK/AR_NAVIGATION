@@ -189,8 +189,10 @@ document.addEventListener('DOMContentLoaded', () => {
                         overlayCanvas.height = window.innerHeight;
                         const ctx = overlayCanvas.getContext('2d');
                         ctx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
-                        const scaleX = window.innerWidth / (video.videoWidth || 640);
-                        const scaleY = window.innerHeight / (video.videoHeight || 480);
+                        
+                        // Scale from the 224x224 AI processing canvas space to the fullscreen overlay space
+                        const scaleX = window.innerWidth / 224;
+                        const scaleY = window.innerHeight / 224;
 
                         preds.forEach(p => {
                             if (p.score < 0.35) return;
@@ -228,8 +230,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
                     const dangerous = preds.filter(p => {
                         const isObs = ['car','truck','bus','motorcycle','bicycle','person','stop sign','traffic light'].includes(p.class);
-                        const isClose = p.bbox[2] > (video.videoWidth || 640) * 0.28;
-                        const isLarge = p.bbox[3] > (video.videoHeight || 480) * 0.22;
+                        // Bounding box size is relative to the downscaled 224x224 processing frame
+                        const isClose = p.bbox[2] > 224 * 0.28;
+                        const isLarge = p.bbox[3] > 224 * 0.22;
                         return isObs && (isClose || isLarge) && p.score > 0.45;
                     });
 
@@ -257,10 +260,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (workerReady && !isDetecting && video.videoWidth && !video.paused) {
                     isDetecting = true;
                     try {
-                        hiddenCanvas.width = video.videoWidth || 640;
-                        hiddenCanvas.height = video.videoHeight || 480;
-                        hiddenCtx.drawImage(video, 0, 0, hiddenCanvas.width, hiddenCanvas.height);
-                        const imgData = hiddenCtx.getImageData(0, 0, hiddenCanvas.width, hiddenCanvas.height);
+                        // Crucial Optimization: Downscale image to 224x224 before GPU analysis to eliminate UI freezing
+                        hiddenCanvas.width = 224;
+                        hiddenCanvas.height = 224;
+                        hiddenCtx.drawImage(video, 0, 0, 224, 224);
+                        const imgData = hiddenCtx.getImageData(0, 0, 224, 224);
                         aiWorker.postMessage({ type: 'detect', image: imgData }); 
                     } catch(ex){ isDetecting = false; }
                 }
@@ -302,10 +306,12 @@ document.addEventListener('DOMContentLoaded', () => {
             // Start route calculation strictly parallel to AR setup
             const routePromise = window.RouteManager.fetchRoute(window.GPS.currentLat, window.GPS.currentLon, destLat, destLon);
 
-            // Wait for camera to be ready before removing input screen natively
-            await cameraPromise;
+            // INSTANT UI STARTUP: Show map and navigation UI extremely fast, don't wait for camera/route to load!
             inputScreen.classList.add('screen-hidden');
             showNav();
+            
+            // Allow camera to load in background seamlessly
+            await cameraPromise;
 
             window.ARScene.init();
 
