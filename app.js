@@ -1,8 +1,12 @@
 // app.js — Orchestrator v4
 // FIXES: Camera quality, startup lag, travel mode selection, deferred AI loading
 
-document.addEventListener('DOMContentLoaded', () => {
+const initApp = () => {
+    if (window.astranav_initialized) return;
+    window.astranav_initialized = true;
+
     const startBtn = document.getElementById('start-btn');
+
     const inputScreen = document.getElementById('input-screen');
     const destInput = document.getElementById('dest-address');
     const suggestionsPanel = document.getElementById('search-suggestions');
@@ -576,4 +580,12 @@ document.addEventListener('DOMContentLoaded', () => {
             sv.innerText = Math.round(window.GPS.speed * 3.6);
         }
     }, 500);
-});
+};
+
+// Handle both normal and dynamic loading
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initApp);
+} else {
+    initApp();
+}
+

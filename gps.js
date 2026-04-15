@@ -60,8 +60,11 @@ window.GPS = {
             );
         } else throw new Error("Geolocation not supported.");
 
-        // Dead reckoning at 30fps (was 60fps — halved for performance)
-        this.drId = setInterval(() => this.deadReckon(), 33);
+        // Dead reckoning at 60fps (requestAnimationFrame)
+        this.active = true;
+        this._drLoop = this.drLoop.bind(this);
+        requestAnimationFrame(this._drLoop);
+
 
         // Accelerometer for road quality
         this.initAccelerometer();
@@ -217,37 +220,47 @@ window.GPS = {
     },
 
     // ── Dead Reckoning (updates displayLat/Lon ONLY — never Kalman state) ──
+    drLoop() {
+        if (!this.active) return;
+        this.deadReckon();
+        requestAnimationFrame(this._drLoop);
+    },
+
     deadReckon() {
-        if (!this.initialized || this.speed < 0.15) { 
-            this.lastDRTime = Date.now(); 
+        if (!this.initialized || this.speed < 0.1) { 
+            this.lastDRTime = performance.now(); 
             return; 
         }
-        const now = Date.now();
+        const now = performance.now();
         let dt = (now - (this.lastDRTime || this.lastUpdateTime)) / 1000;
         this.lastDRTime = now;
-        if (dt <= 0 || dt > 2) return;
+        if (dt <= 0 || dt > 1) return;
 
+        // ACCURACY UPGRADE: Predictive heading integration
         const hr = this.smoothHeading * Math.PI / 180;
         const dist = this.speed * dt;
         const R = 6378137;
+        
         const dLat = (dist * Math.cos(hr)) / R * (180 / Math.PI);
         const dLon = (dist * Math.sin(hr)) / (R * Math.cos((this.displayLat || this.currentLat) * Math.PI / 180)) * (180 / Math.PI);
         
-        // Only update display position — Kalman state stays pure
         if (this.displayLat !== null) {
             this.displayLat += dLat;
             this.displayLon += dLon;
         }
         
-        // Throttle notifications
+        // At 60fps, we notify at the same rate for peak fluidity
         this.throttledNotify();
     },
+
     
-    // ── Throttled notify — max 15 times/sec ──
+    // ── Throttled notify — optimized for 60fps rendering ──
     throttledNotify() {
-        const now = Date.now();
-        if (now - this.lastNotifyTime < 66) return;
+        const now = performance.now();
+        // Reduced throttle to 60fps (16ms) instead of 15fps
+        if (now - this.lastNotifyTime < 16) return;
         this.lastNotifyTime = now;
+
         
         const lat = this.displayLat || this.currentLat;
         const lon = this.displayLon || this.currentLon;

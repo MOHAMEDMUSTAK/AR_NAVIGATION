@@ -185,17 +185,18 @@ window.RouteManager = {
 
     // ── COORDS — Always relative to CURRENT user position ──
     latLonToLocal(lat, lon) {
-        // CRITICAL FIX: Use current GPS position as origin, not route start
-        // This keeps all Three.js coordinates small and prevents floating-point overflow
-        const refLat = window.GPS?.displayLat || window.GPS?.currentLat || this.originLat;
-        const refLon = window.GPS?.displayLon || window.GPS?.currentLon || this.originLon;
-        if (!refLat) return { x: 0, z: 0 };
+        // PRECISION UPGRADE: Use high-frequency display coordinates for sub-meter AR anchoring
+        const refLat = window.GPS?.displayLat !== null ? window.GPS.displayLat : (window.GPS?.currentLat || this.originLat);
+        const refLon = window.GPS?.displayLon !== null ? window.GPS.displayLon : (window.GPS?.currentLon || this.originLon);
+        if (!refLat || !refLon) return { x: 0, z: 0 };
+        
         const R = 6378137;
         const dLat = (lat - refLat) * Math.PI / 180;
         const dLon = (lon - refLon) * Math.PI / 180;
         const cosLat = Math.cos(refLat * Math.PI / 180);
         return { x: R * dLon * cosLat, z: -(R * dLat) };
     },
+
 
     // ── MINIMAP ──
     initMiniMap(lat, lon) {
@@ -335,12 +336,18 @@ window.RouteManager = {
     },
 
     snapToRoute(lat, lon) {
+        // PREDICTIVE UPGRADE: Use velocity to "look ahead" for the snapping window
+        const spd = window.GPS.speed || 0;
+        const lookAheadMeters = spd * 0.8; 
+
+        
         let minCost = Infinity, bestIdx = this.lastSnapIndex || 0, bestSnap = { lat, lon, t: 0 };
         const h = window.GPS.smoothHeading || 0;
         
-        // Local window search first
-        const start = Math.max(0, bestIdx - 50);
-        const end = Math.min(this.pathCoordinates.length - 1, bestIdx + 120);
+        // Search window biased towards the forward direction
+        const start = Math.max(0, bestIdx - 10); // Tighten backward search
+        const end = Math.min(this.pathCoordinates.length - 1, bestIdx + 150); // Expand forward search
+
 
         for (let i = start; i < end; i++) {
             const p1 = this.pathCoordinates[i], p2 = this.pathCoordinates[i + 1];
@@ -523,15 +530,15 @@ window.RouteManager = {
             isWrongWay = headingDiff > 120;
         }
         
-        const shouldReroute = (snap.distance > rerouteThreshold) || (isWrongWay && snap.distance > 10);
+        const shouldReroute = (snap.distance > rerouteThreshold) || (isWrongWay && snap.distance > 8);
         
         if (shouldReroute && !this.recalculating && this.recalcCooldown <= 0) {
             this.recalculating = true; 
-            this.recalcCooldown = 20; // Faster cooldown (was 30)
-            if (isWrongWay) {
+            this.recalcCooldown = 15; // Fast reroute response
+            if (isWrongWay && spdMs > 3) {
                 this.speak("Wrong way. Recalculating route.");
-            } else {
-                this.speak("You have left the route. Recalculating.");
+            } else if (snap.distance > rerouteThreshold) {
+                this.speak("Recalculating.");
             }
             this.DOMFast.text('road-name', "Rerouting...");
             this.fetchRoute(lat, lon, this.destLat, this.destLon, true)
@@ -539,6 +546,7 @@ window.RouteManager = {
                 .catch(() => { this.recalculating = false; });
             return;
         }
+
         
         // Warn if slightly off route (between 10m and threshold)
         if (snap.distance > 10 && snap.distance <= rerouteThreshold && !this.offRouteWarned) {

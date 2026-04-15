@@ -13,7 +13,9 @@ window.ARScene = {
         if (!c) return;
 
         this.scene = new THREE.Scene();
-        this.camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.1, 800);
+        this.camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.1, 1000);
+        this.camera.userData.baseFov = 70;
+
 
         this.renderer = new THREE.WebGLRenderer({ alpha: true, antialias: false });
         this.renderer.setSize(window.innerWidth, window.innerHeight);
@@ -465,9 +467,17 @@ window.ARScene = {
                 let dY = targetY - this.pathGroup.rotation.y;
                 while (dY > Math.PI) dY -= Math.PI * 2;
                 while (dY < -Math.PI) dY += Math.PI * 2;
-                this.pathGroup.rotation.y += dY * 0.05;
+                this.pathGroup.rotation.y += dY * 0.08; // Smother rotation
+            }
+            
+            // DYNAMIC FOV: Zoom out at higher speeds to show more road
+            const targetFov = this.camera.userData.baseFov + Math.min(15, spdMs * 1.2);
+            if (Math.abs(this.camera.fov - targetFov) > 0.1) {
+                this.camera.fov += (targetFov - this.camera.fov) * 0.05;
+                this.camera.updateProjectionMatrix();
             }
         }
+
 
         // Animate children
         this.pathGroup.children.forEach(ch => {
