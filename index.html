@@ -13,9 +13,7 @@
     <link rel="apple-touch-icon" href="icon.svg">
     <link rel="icon" href="icon.svg" type="image/svg+xml">
     <link rel="stylesheet" href="style.css">
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
 </head>
 <body>
@@ -50,7 +48,7 @@
         <span id="weather-temp">--°C</span>
     </div>
 
-    <!-- TOP HUD (Sygic-style) -->
+    <!-- TOP HUD -->
     <div id="top-hud" class="nav-hidden">
         <div class="hud-top-bar">
             <div class="hud-left">
@@ -123,7 +121,7 @@
         <button id="sos-btn" class="opt-btn opt-sos" title="Emergency">🆘</button>
     </div>
 
-    <!-- Trip Dashboard (Swipe up from bottom) -->
+    <!-- Trip Dashboard -->
     <div id="trip-dashboard" class="trip-hidden glass-panel">
         <div class="trip-handle"></div>
         <h3>Trip Stats</h3>
@@ -176,6 +174,23 @@
                 </div>
                 <div id="search-suggestions" class="suggestions-hidden"></div>
             </div>
+            
+            <!-- Travel Mode Selector -->
+            <div class="travel-mode-selector">
+                <button class="mode-btn mode-active" data-mode="driving" title="Driving">
+                    <span class="mode-icon">🚗</span>
+                    <span class="mode-label">Drive</span>
+                </button>
+                <button class="mode-btn" data-mode="walking" title="Walking">
+                    <span class="mode-icon">🚶</span>
+                    <span class="mode-label">Walk</span>
+                </button>
+                <button class="mode-btn" data-mode="cycling" title="Cycling">
+                    <span class="mode-icon">🚲</span>
+                    <span class="mode-label">Cycle</span>
+                </button>
+            </div>
+            
             <div id="recent-destinations" class="recent-hidden">
                 <p class="recent-label">Recent</p>
                 <div id="recent-list"></div>
@@ -198,10 +213,30 @@
         </div>
     </div>
 
-    <script src="gps.js"></script>
-    <script src="route.js"></script>
-    <script src="ar.js"></script>
-    <script src="app.js"></script>
+    <!-- Deferred Three.js loading -->
+    <script>
+        // Sequential loader — each script waits for the previous one
+        function loadScript(src) {
+            return new Promise((resolve, reject) => {
+                const s = document.createElement('script');
+                s.src = src;
+                s.onload = resolve;
+                s.onerror = reject;
+                document.body.appendChild(s);
+            });
+        }
+        
+        // Load dependencies first, then app scripts in strict order
+        (async function() {
+            await loadScript('https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js');
+            await loadScript('https://unpkg.com/leaflet@1.9.4/dist/leaflet.js');
+            // App scripts MUST load in this order: gps → route → ar → app
+            await loadScript('gps.js');
+            await loadScript('route.js');
+            await loadScript('ar.js');
+            await loadScript('app.js');
+        })();
+    </script>
 
     <script>
         if ('serviceWorker' in navigator) {

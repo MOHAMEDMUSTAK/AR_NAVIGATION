@@ -1,4 +1,4 @@
-const CACHE_NAME = 'astranav-v1';
+const CACHE_NAME = 'astranav-v4';
 const ASSETS_TO_CACHE = [
     './',
     './index.html',
@@ -7,7 +7,6 @@ const ASSETS_TO_CACHE = [
     './ar.js',
     './gps.js',
     './route.js',
-    './tunnel.js',
     './ai-worker.js',
     './manifest.json',
     './icon.svg'
@@ -15,6 +14,7 @@ const ASSETS_TO_CACHE = [
 
 // Install event: cache assets
 self.addEventListener('install', (event) => {
+    self.skipWaiting(); // Activate immediately
     event.waitUntil(
         caches.open(CACHE_NAME)
             .then((cache) => {
@@ -39,11 +39,13 @@ self.addEventListener('activate', (event) => {
                     }
                 })
             );
+        }).then(() => {
+            return self.clients.claim(); // Take control of all pages immediately
         })
     );
 });
 
-// Fetch event: Network-First strategy (always get latest code if online, fallback to cache if offline)
+// Fetch event: Network-First strategy
 self.addEventListener('fetch', (event) => {
     // Skip cross-origin requests
     if (!event.request.url.startsWith(self.location.origin)) {
@@ -53,7 +55,6 @@ self.addEventListener('fetch', (event) => {
     event.respondWith(
         fetch(event.request)
             .then((networkResponse) => {
-                // If we get a valid response from the network, cache a copy of it and return it!
                 if (networkResponse && networkResponse.status === 200 && networkResponse.type === 'basic') {
                     const responseToCache = networkResponse.clone();
                     caches.open(CACHE_NAME).then((cache) => {
@@ -63,7 +64,6 @@ self.addEventListener('fetch', (event) => {
                 return networkResponse;
             })
             .catch(() => {
-                // Network failed (user is offline). Check the cache!
                 return caches.match(event.request);
             })
     );

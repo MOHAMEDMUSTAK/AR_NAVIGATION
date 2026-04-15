@@ -1,54 +1,77 @@
-// route.js — Ultra Route Engine v3
-// ETA, Road Names, Weather, Lane Guidance, Fullscreen Map, Snapping
+// route.js — Precision Route Engine v4
+// Multi-mode routing, accurate voice navigation, real-time snapping, dynamic origin
 
 window.RouteManager = {
-    steps:[], pathCoordinates:[], totalDistance:0, remainingDistance:0, currentStepIndex:0,
-    mapInstance:null, fullMapInstance:null, routeLayer:null, fullRouteLayer:null,
-    userMarker:null, fullUserMarker:null, turnMarkers:[], fullTurnMarkers:[],
-    originLat:null, originLon:null, allRoutes:[], selectedRouteIndex:0, etaSeconds:0,
-    audioEnabled:false, announced500m:false, announced200m:false, announced50m:false,
-    recalculating:false, recalcCooldown:0,
-    destLat:null, destLon:null, destName:'', isFullMapOpen:false,
+    steps: [], pathCoordinates: [], totalDistance: 0, remainingDistance: 0, currentStepIndex: 0,
+    mapInstance: null, fullMapInstance: null, routeLayer: null, fullRouteLayer: null,
+    userMarker: null, fullUserMarker: null, turnMarkers: [], fullTurnMarkers: [],
+    originLat: null, originLon: null, allRoutes: [], selectedRouteIndex: 0, etaSeconds: 0,
+    audioEnabled: false, announced500m: false, announced200m: false, announced50m: false,
+    recalculating: false, recalcCooldown: 0,
+    destLat: null, destLon: null, destName: '', isFullMapOpen: false,
     currentRoadName: '--', speedLimitKmh: 0,
-    
+    travelMode: 'driving', // 'driving', 'walking', 'cycling'
+    lastSnapIndex: 0, lastUIDraw: 0, lastMapPan: 0, lastCheckTime: 0,
+    lastArBuildLat: null, lastArBuildLon: null,
+
     DOMFast: {
         cache: {},
         text(id, val) { if (this.cache[id] === val) return; this.cache[id] = val; const el = document.getElementById(id); if (el) el.innerText = val; },
         class(id, addC, rmC) { const k = id+'_c'; if (this.cache[k] === addC) return; this.cache[k] = addC; const el = document.getElementById(id); if (el) { if (rmC) el.classList.remove(rmC); el.classList.add(addC); } }
     },
 
+    // ── OSRM profile from travel mode ──
+    getOSRMProfile() {
+        if (this.travelMode === 'walking') return 'foot';
+        if (this.travelMode === 'cycling') return 'bicycle';
+        return 'driving';
+    },
+
     // ── FETCH ROUTE ──
-    async fetchRoute(startLat, startLon, endLat, endLon, isReroute=false) {
-        this.destLat=endLat; this.destLon=endLon;
+    async fetchRoute(startLat, startLon, endLat, endLon, isReroute = false) {
+        this.destLat = endLat; this.destLon = endLon;
+        
+        // CRITICAL FIX: Always update origin to current position
+        // This prevents AR coordinate overflow when traveling far
+        this.originLat = startLat;
+        this.originLon = startLon;
+        
         this.initMiniMap(startLat, startLon);
 
-        // Racing Routers for 100% instant navigation
-        const url1 = `https://router.project-osrm.org/route/v1/driving/${startLon},${startLat};${endLon},${endLat}?steps=true&geometries=geojson&overview=full&annotations=distance,duration`;
-        const url2 = `https://routing.openstreetmap.de/routed-car/route/v1/driving/${startLon},${startLat};${endLon},${endLat}?steps=true&geometries=geojson&overview=full&annotations=distance,duration`;
+        const profile = this.getOSRMProfile();
+        const url1 = `https://router.project-osrm.org/route/v1/${profile}/${startLon},${startLat};${endLon},${endLat}?steps=true&geometries=geojson&overview=full&annotations=distance,duration`;
+        const url2 = `https://routing.openstreetmap.de/routed-${profile === 'foot' ? 'foot' : profile === 'bicycle' ? 'bike' : 'car'}/route/v1/${profile}/${startLon},${startLat};${endLon},${endLat}?steps=true&geometries=geojson&overview=full&annotations=distance,duration`;
 
-        if (!isReroute) { this.originLat=startLat; this.originLon=startLon; }
+        let data = null;
 
-        const controller = new AbortController();
-        setTimeout(() => controller.abort(), 4500); 
-
-        let data;
+        // Sequential fallback instead of Promise.any to avoid bad partial results
         try {
-            const fetch1 = fetch(url1, { signal: controller.signal }).then(r=>r.json());
-            const fetch2 = fetch(url2, { signal: controller.signal }).then(r=>r.json());
-            
-            data = await Promise.any([
-                fetch1.then(d => { if (d.code !== 'Ok') throw 'error'; return d; }),
-                fetch2.then(d => { if (d.code !== 'Ok') throw 'error'; return d; })
-            ]);
-        } catch(e) {
-            throw new Error("Routing servers unavailable. Please check connection.");
+            const controller1 = new AbortController();
+            setTimeout(() => controller1.abort(), 5000);
+            const res1 = await fetch(url1, { signal: controller1.signal });
+            const json1 = await res1.json();
+            if (json1.code === 'Ok' && json1.routes?.length) data = json1;
+        } catch(e) {}
+
+        if (!data) {
+            try {
+                const controller2 = new AbortController();
+                setTimeout(() => controller2.abort(), 5000);
+                const res2 = await fetch(url2, { signal: controller2.signal });
+                const json2 = await res2.json();
+                if (json2.code === 'Ok' && json2.routes?.length) data = json2;
+            } catch(e) {}
+        }
+
+        if (!data) {
+            throw new Error("Route could not be calculated. Check your connection.");
         }
 
         this.allRoutes = data.routes;
         if (data.routes.length > 1 && !isReroute) this.showRouteAlts(data.routes);
         this.selectRoute(0);
 
-        // Fetch weather for destination
+        // Fetch weather
         this.fetchWeather(endLat, endLon);
         return true;
     },
@@ -59,7 +82,9 @@ window.RouteManager = {
         const r = this.allRoutes[i];
         this.totalDistance = r.distance;
         this.remainingDistance = r.distance;
-        this.pathCoordinates = r.geometry.coordinates.map(c => ({ lon:c[0], lat:c[1] }));
+        this.pathCoordinates = r.geometry.coordinates.map(c => ({ lon: c[0], lat: c[1] }));
+        
+        // Pre-compute cumulative distance from each point to the end
         if (this.pathCoordinates.length > 0) {
             let d = 0;
             this.pathCoordinates[this.pathCoordinates.length - 1].cumulativeDist = 0;
@@ -75,7 +100,6 @@ window.RouteManager = {
             this.steps = r.legs[0].steps;
             this.currentStepIndex = 0;
             this.announced500m = this.announced200m = this.announced50m = false;
-            // Get initial road name
             if (this.steps[0]?.name) this.updateRoadName(this.steps[0].name);
         }
 
@@ -94,9 +118,9 @@ window.RouteManager = {
         if (!p) return; p.innerHTML = ''; p.classList.remove('alt-hidden');
         routes.forEach((r, i) => {
             const c = document.createElement('div');
-            c.className = `route-card ${i===0?'route-card-selected':''}`;
-            c.innerHTML = `<div class="route-card-label">${i===0?'Fastest':i===1?'Alternative':`Route ${i+1}`}</div><div class="route-card-time">${Math.round(r.duration/60)} min</div><div class="route-card-dist">${(r.distance/1000).toFixed(1)} km</div>`;
-            c.addEventListener('click', () => { p.querySelectorAll('.route-card').forEach(x=>x.classList.remove('route-card-selected')); c.classList.add('route-card-selected'); this.selectRoute(i); });
+            c.className = `route-card ${i===0 ? 'route-card-selected' : ''}`;
+            c.innerHTML = `<div class="route-card-label">${i===0 ? 'Fastest' : i===1 ? 'Alternative' : `Route ${i+1}`}</div><div class="route-card-time">${Math.round(r.duration/60)} min</div><div class="route-card-dist">${(r.distance/1000).toFixed(1)} km</div>`;
+            c.addEventListener('click', () => { p.querySelectorAll('.route-card').forEach(x => x.classList.remove('route-card-selected')); c.classList.add('route-card-selected'); this.selectRoute(i); });
             p.appendChild(c);
         });
         setTimeout(() => p.classList.add('alt-hidden'), 12000);
@@ -126,7 +150,6 @@ window.RouteManager = {
                 document.getElementById('weather-temp').innerText = `${temp}°C`;
                 if (banner) { banner.classList.remove('weather-hidden'); banner.classList.add('weather-visible'); }
 
-                // Voice weather warning for bad conditions
                 if (code >= 61 && this.audioEnabled) {
                     setTimeout(() => this.speak(`Weather warning: ${text} conditions. Drive carefully.`), 3000);
                 }
@@ -140,11 +163,18 @@ window.RouteManager = {
         this.DOMFast.text('road-name', this.currentRoadName);
     },
 
-    // ── COORDS ──
+    // ── COORDS — Always relative to CURRENT user position ──
     latLonToLocal(lat, lon) {
-        if (!this.originLat) return {x:0,z:0};
-        const R=6378137, dLat=(lat-this.originLat)*Math.PI/180, dLon=(lon-this.originLon)*Math.PI/180, l1=this.originLat*Math.PI/180;
-        return { x:R*dLon*Math.cos(l1), z:-(R*dLat) };
+        // CRITICAL FIX: Use current GPS position as origin, not route start
+        // This keeps all Three.js coordinates small and prevents floating-point overflow
+        const refLat = window.GPS?.displayLat || window.GPS?.currentLat || this.originLat;
+        const refLon = window.GPS?.displayLon || window.GPS?.currentLon || this.originLon;
+        if (!refLat) return { x: 0, z: 0 };
+        const R = 6378137;
+        const dLat = (lat - refLat) * Math.PI / 180;
+        const dLon = (lon - refLon) * Math.PI / 180;
+        const cosLat = Math.cos(refLat * Math.PI / 180);
+        return { x: R * dLon * cosLat, z: -(R * dLat) };
     },
 
     // ── MINIMAP ──
@@ -153,36 +183,35 @@ window.RouteManager = {
         if (w) { w.classList.remove('nav-hidden'); w.classList.add('nav-visible'); }
         if (this.mapInstance) return;
 
-        this.mapInstance = L.map('minimap', { zoomControl:false, attributionControl:false, dragging:false, scrollWheelZoom:false, doubleClickZoom:false, touchZoom:false }).setView([lat,lon], 16);
-        L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', { maxZoom:19 }).addTo(this.mapInstance);
+        this.mapInstance = L.map('minimap', { zoomControl: false, attributionControl: false, dragging: false, scrollWheelZoom: false, doubleClickZoom: false, touchZoom: false }).setView([lat, lon], 16);
+        L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', { maxZoom: 19 }).addTo(this.mapInstance);
 
-        const ic = L.divIcon({ className:'custom-div-icon', html:'<div class="user-marker-dot"><div class="user-marker-pulse"></div></div>', iconSize:[16,16], iconAnchor:[8,8] });
-        this.userMarker = L.marker([lat,lon], {icon:ic}).addTo(this.mapInstance);
+        const ic = L.divIcon({ className: 'custom-div-icon', html: '<div class="user-marker-dot"><div class="user-marker-pulse"></div></div>', iconSize: [16, 16], iconAnchor: [8, 8] });
+        this.userMarker = L.marker([lat, lon], { icon: ic }).addTo(this.mapInstance);
 
         document.getElementById('minimap-wrapper').addEventListener('click', e => { e.stopPropagation(); this.toggleFullMap(); });
 
         window.GPS.onUpdate((t, d) => {
-            if (t==='position') {
+            if (t === 'position') {
                 const now = Date.now();
-                
-                // Heading-Up Minimap Mode (60 FPS hardware rotated)
+
+                // Heading-Up Minimap
                 const mapEl = document.getElementById('minimap');
-                if (mapEl && window.GPS && window.GPS.smoothHeading != null) {
+                if (mapEl && window.GPS.smoothHeading != null) {
                     mapEl.style.transform = `rotate(${-window.GPS.smoothHeading}deg)`;
                     mapEl.style.transformOrigin = 'center center';
-                    // Counter-rotate the blue dot so it constantly faces physically FORWARD on the screen
                     if (this.userMarker._icon) this.userMarker._icon.style.transform = `rotate(${window.GPS.smoothHeading}deg)`;
                 }
 
-                // Add smooth hardware-accelerated gliding to the marker icon for 60FPS tracking
+                // Smooth marker movement
                 if (this.userMarker._icon) {
-                    this.userMarker._icon.style.transition = 'transform 0.06s linear, top 0.06s linear, left 0.06s linear';
+                    this.userMarker._icon.style.transition = 'transform 0.1s linear, top 0.1s linear, left 0.1s linear';
                 }
                 this.userMarker.setLatLng([d.lat, d.lon]);
 
-                // Fluid Google-Maps style camera locking. Pan efficiently every 333ms to match UI thread without stuttering
-                if (!this.lastMapPan || now - this.lastMapPan >= 333) {
-                    this.mapInstance.panTo([d.lat, d.lon], { animate: true, duration: 0.35, easeLinearity: 1 });
+                // Pan map every 400ms
+                if (!this.lastMapPan || now - this.lastMapPan >= 400) {
+                    this.mapInstance.panTo([d.lat, d.lon], { animate: true, duration: 0.4, easeLinearity: 1 });
                     this.lastMapPan = now;
                 }
 
@@ -190,8 +219,8 @@ window.RouteManager = {
                     if (this.fullUserMarker._icon) this.fullUserMarker._icon.style.transition = 'transform 0.1s linear';
                     this.fullUserMarker.setLatLng([d.lat, d.lon]);
                 }
-                
-                // Fix Lag: Throttle extremely heavy routing calculations to 3 FPS
+
+                // Throttle heavy routing to 3 FPS
                 if (!this.lastCheckTime || now - this.lastCheckTime >= 333) {
                     this.lastCheckTime = now;
                     this.checkProgress(d.lat, d.lon);
@@ -205,32 +234,32 @@ window.RouteManager = {
         const o = document.getElementById('fullscreen-map-overlay');
         if (!o) return;
         if (this.isFullMapOpen) {
-            o.classList.remove('fullmap-open'); o.classList.add('fullmap-closed'); this.isFullMapOpen=false;
+            o.classList.remove('fullmap-open'); o.classList.add('fullmap-closed'); this.isFullMapOpen = false;
         } else {
-            o.classList.remove('fullmap-closed'); o.classList.add('fullmap-open'); this.isFullMapOpen=true;
+            o.classList.remove('fullmap-closed'); o.classList.add('fullmap-open'); this.isFullMapOpen = true;
             if (!this.fullMapInstance) this.initFullMap();
             else { this.fullMapInstance.invalidateSize(); if (window.GPS.currentLat) this.fullMapInstance.setView([window.GPS.currentLat, window.GPS.currentLon], 15); }
         }
     },
 
     initFullMap() {
-        this.fullMapInstance = L.map('fullscreen-map', { zoomControl:true, attributionControl:false, dragging:true, scrollWheelZoom:true, touchZoom:true }).setView([window.GPS.currentLat||0, window.GPS.currentLon||0], 15);
-        L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', { maxZoom:19 }).addTo(this.fullMapInstance);
+        this.fullMapInstance = L.map('fullscreen-map', { zoomControl: true, attributionControl: false, dragging: true, scrollWheelZoom: true, touchZoom: true }).setView([window.GPS.currentLat || 0, window.GPS.currentLon || 0], 15);
+        L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', { maxZoom: 19 }).addTo(this.fullMapInstance);
 
-        const ic = L.divIcon({ className:'custom-div-icon', html:'<div class="user-marker-dot"><div class="user-marker-pulse"></div></div>', iconSize:[18,18], iconAnchor:[9,9] });
-        this.fullUserMarker = L.marker([window.GPS.currentLat||0, window.GPS.currentLon||0], {icon:ic}).addTo(this.fullMapInstance);
+        const ic = L.divIcon({ className: 'custom-div-icon', html: '<div class="user-marker-dot"><div class="user-marker-pulse"></div></div>', iconSize: [18, 18], iconAnchor: [9, 9] });
+        this.fullUserMarker = L.marker([window.GPS.currentLat || 0, window.GPS.currentLon || 0], { icon: ic }).addTo(this.fullMapInstance);
 
         if (this.pathCoordinates.length) {
-            const ll = this.pathCoordinates.map(c=>[c.lat,c.lon]);
-            this.fullRouteLayer = L.polyline(ll, {color:'#b000ff',weight:5,opacity:.9}).addTo(this.fullMapInstance);
-            this.fullMapInstance.fitBounds(this.fullRouteLayer.getBounds(), {padding:[40,40]});
+            const ll = this.pathCoordinates.map(c => [c.lat, c.lon]);
+            this.fullRouteLayer = L.polyline(ll, { color: '#b000ff', weight: 5, opacity: 0.9 }).addTo(this.fullMapInstance);
+            this.fullMapInstance.fitBounds(this.fullRouteLayer.getBounds(), { padding: [40, 40] });
         }
 
         this.drawFullTurnMarkers();
 
         if (this.destLat) {
-            const di = L.divIcon({ className:'custom-div-icon', html:'<div class="dest-marker-dot">📍</div>', iconSize:[28,28], iconAnchor:[14,28] });
-            L.marker([this.destLat,this.destLon], {icon:di}).addTo(this.fullMapInstance).bindPopup(this.destName||'Destination');
+            const di = L.divIcon({ className: 'custom-div-icon', html: '<div class="dest-marker-dot">📍</div>', iconSize: [28, 28], iconAnchor: [14, 28] });
+            L.marker([this.destLat, this.destLon], { icon: di }).addTo(this.fullMapInstance).bindPopup(this.destName || 'Destination');
         }
 
         document.getElementById('close-fullmap-btn').addEventListener('click', e => { e.stopPropagation(); this.toggleFullMap(); });
@@ -238,39 +267,39 @@ window.RouteManager = {
 
     drawRoute(coords) {
         if (this.routeLayer) this.mapInstance.removeLayer(this.routeLayer);
-        const ll = coords.map(c=>[c[1],c[0]]);
-        this.routeLayer = L.polyline(ll, {color:'#b000ff',weight:4,opacity:.8}).addTo(this.mapInstance);
-        this.mapInstance.fitBounds(this.routeLayer.getBounds(), {padding:[10,10]});
+        const ll = coords.map(c => [c[1], c[0]]);
+        this.routeLayer = L.polyline(ll, { color: '#b000ff', weight: 4, opacity: 0.8 }).addTo(this.mapInstance);
+        this.mapInstance.fitBounds(this.routeLayer.getBounds(), { padding: [10, 10] });
         if (this.fullMapInstance) {
             if (this.fullRouteLayer) this.fullMapInstance.removeLayer(this.fullRouteLayer);
-            this.fullRouteLayer = L.polyline(ll, {color:'#b000ff',weight:5,opacity:.9}).addTo(this.fullMapInstance);
+            this.fullRouteLayer = L.polyline(ll, { color: '#b000ff', weight: 5, opacity: 0.9 }).addTo(this.fullMapInstance);
         }
     },
 
     drawTurnMarkers() {
-        this.turnMarkers.forEach(m=>this.mapInstance.removeLayer(m)); this.turnMarkers=[];
-        this.steps.forEach((s,i) => {
-            if (i===0) return;
-            const loc=s.maneuver.location, mod=s.maneuver.modifier||'straight';
-            let a='⬆'; if (mod.includes('left'))a='⬅'; else if(mod.includes('right'))a='➡'; else if(mod.includes('uturn'))a='↩';
-            const ic = L.divIcon({className:'custom-div-icon', html:`<div class="turn-marker-dot">${a}</div>`, iconSize:[18,18], iconAnchor:[9,9]});
-            this.turnMarkers.push(L.marker([loc[1],loc[0]], {icon:ic}).addTo(this.mapInstance));
+        this.turnMarkers.forEach(m => this.mapInstance.removeLayer(m)); this.turnMarkers = [];
+        this.steps.forEach((s, i) => {
+            if (i === 0) return;
+            const loc = s.maneuver.location, mod = s.maneuver.modifier || 'straight';
+            let a = '⬆'; if (mod.includes('left')) a = '⬅'; else if (mod.includes('right')) a = '➡'; else if (mod.includes('uturn')) a = '↩';
+            const ic = L.divIcon({ className: 'custom-div-icon', html: `<div class="turn-marker-dot">${a}</div>`, iconSize: [18, 18], iconAnchor: [9, 9] });
+            this.turnMarkers.push(L.marker([loc[1], loc[0]], { icon: ic }).addTo(this.mapInstance));
         });
     },
 
     drawFullTurnMarkers() {
         if (!this.fullMapInstance) return;
-        this.fullTurnMarkers.forEach(m=>this.fullMapInstance.removeLayer(m)); this.fullTurnMarkers=[];
-        this.steps.forEach((s,i) => {
-            if (i===0) return;
-            const loc=s.maneuver.location, mod=s.maneuver.modifier||'straight', instr=s.maneuver.instruction||'';
-            let a='⬆'; if(mod.includes('left'))a='⬅'; else if(mod.includes('right'))a='➡'; else if(mod.includes('uturn'))a='↩';
-            const ic = L.divIcon({className:'custom-div-icon', html:`<div class="turn-marker-dot-lg">${a}</div>`, iconSize:[24,24], iconAnchor:[12,12]});
-            this.fullTurnMarkers.push(L.marker([loc[1], loc[0]], {icon:ic}).addTo(this.fullMapInstance).bindPopup(instr));
+        this.fullTurnMarkers.forEach(m => this.fullMapInstance.removeLayer(m)); this.fullTurnMarkers = [];
+        this.steps.forEach((s, i) => {
+            if (i === 0) return;
+            const loc = s.maneuver.location, mod = s.maneuver.modifier || 'straight', instr = s.maneuver.instruction || '';
+            let a = '⬆'; if (mod.includes('left')) a = '⬅'; else if (mod.includes('right')) a = '➡'; else if (mod.includes('uturn')) a = '↩';
+            const ic = L.divIcon({ className: 'custom-div-icon', html: `<div class="turn-marker-dot-lg">${a}</div>`, iconSize: [24, 24], iconAnchor: [12, 12] });
+            this.fullTurnMarkers.push(L.marker([loc[1], loc[0]], { icon: ic }).addTo(this.fullMapInstance).bindPopup(instr));
         });
     },
 
-    // ── SNAPPING (Orthogonal Vector Projection) ──
+    // ── SNAPPING (Vector Projection) ──
     projectPoint(pLat, pLon, p1, p2) {
         const R = 6378137;
         const dLat2 = (p2.lat - p1.lat) * (Math.PI / 180);
@@ -286,46 +315,46 @@ window.RouteManager = {
     },
 
     snapToRoute(lat, lon) {
-        let minCost = Infinity, bestIdx = this.lastSnapIndex || 0, bestSnap = {lat, lon, t:0};
-        let start = Math.max(0, bestIdx - 80);
-        let end = Math.min(this.pathCoordinates.length - 1, bestIdx + 150);
-        let h = window.GPS.smoothHeading || 0;
+        let minCost = Infinity, bestIdx = this.lastSnapIndex || 0, bestSnap = { lat, lon, t: 0 };
+        const h = window.GPS.smoothHeading || 0;
+        
+        // Local window search first
+        const start = Math.max(0, bestIdx - 50);
+        const end = Math.min(this.pathCoordinates.length - 1, bestIdx + 120);
 
         for (let i = start; i < end; i++) {
-            const p1 = this.pathCoordinates[i], p2 = this.pathCoordinates[i+1];
+            const p1 = this.pathCoordinates[i], p2 = this.pathCoordinates[i + 1];
+            if (!p2) continue;
             const proj = this.projectPoint(lat, lon, p1, p2);
             const dist = this.haversine(lat, lon, proj.lat, proj.lon);
             const b = window.GPS.calcBearing(p1.lat, p1.lon, p2.lat, p2.lon);
-            
-            // True Dot Product Vector Snapping
+
+            // Dot product for direction agreement
             const bx = Math.sin(b * Math.PI / 180), by = Math.cos(b * Math.PI / 180);
             const hx = Math.sin(h * Math.PI / 180), hy = Math.cos(h * Math.PI / 180);
-            const dotProduct = (bx * hx + by * hy);
-            
-            // Heavy penalty if user is driving the wrong direction down the vector
+            const dotProduct = bx * hx + by * hy;
+
             const dotPenalty = dotProduct < 0 ? 50 : Math.max(1, 1.5 - dotProduct);
             const cost = dist * dotPenalty;
 
             if (cost < minCost) { minCost = cost; bestIdx = i; bestSnap = proj; }
         }
 
-        // Global search fallback if badly lost
-        if (minCost > 2000) {
+        // Global fallback if badly lost
+        if (minCost > 1500) {
             for (let i = 0; i < this.pathCoordinates.length - 1; i++) {
-                const p1 = this.pathCoordinates[i], p2 = this.pathCoordinates[i+1];
+                const p1 = this.pathCoordinates[i], p2 = this.pathCoordinates[i + 1];
                 const proj = this.projectPoint(lat, lon, p1, p2);
                 const dist = this.haversine(lat, lon, proj.lat, proj.lon);
                 const b = window.GPS.calcBearing(p1.lat, p1.lon, p2.lat, p2.lon);
-                
                 const bx = Math.sin(b * Math.PI / 180), by = Math.cos(b * Math.PI / 180);
                 const hx = Math.sin(h * Math.PI / 180), hy = Math.cos(h * Math.PI / 180);
-                const dotProduct = (bx * hx + by * hy);
+                const dotProduct = bx * hx + by * hy;
                 const cost = dist * (dotProduct < 0 ? 10 : Math.max(1, 1.2 - dotProduct));
-
                 if (cost < minCost) { minCost = cost; bestIdx = i; bestSnap = proj; }
             }
         }
-        
+
         this.lastSnapIndex = bestIdx;
         return { index: bestIdx, distance: this.haversine(lat, lon, bestSnap.lat, bestSnap.lon), snappedLat: bestSnap.lat, snappedLon: bestSnap.lon, t: bestSnap.t };
     },
@@ -333,141 +362,250 @@ window.RouteManager = {
     calcRemaining(snap) {
         if (!this.pathCoordinates[snap.index]) return 0;
         let d = this.pathCoordinates[snap.index].cumulativeDist || 0;
-        // Subtract the segment fraction we have already traveled
-        const p1 = this.pathCoordinates[snap.index], p2 = this.pathCoordinates[snap.index+1];
+        const p1 = this.pathCoordinates[snap.index], p2 = this.pathCoordinates[snap.index + 1];
         if (p2) {
             const segDist = this.haversine(p1.lat, p1.lon, p2.lat, p2.lon);
             d -= (segDist * snap.t);
         }
-        return d;
+        return Math.max(0, d);
+    },
+
+    // ════════════════════════════════════════════════════════
+    // VOICE INSTRUCTION GENERATOR — Clear, accurate directions
+    // ════════════════════════════════════════════════════════
+    buildVoiceInstruction(step) {
+        const mod = step.maneuver.modifier || 'straight';
+        const mType = step.maneuver.type || '';
+        const roadName = step.name || '';
+        const rdText = roadName ? ` onto ${roadName}` : '';
+
+        // Build clear, specific turn-by-turn instructions
+        switch(mType) {
+            case 'turn':
+                if (mod.includes('sharp left')) return `Make a sharp left turn${rdText}`;
+                if (mod.includes('slight left')) return `Turn slightly left${rdText}`;
+                if (mod.includes('left')) return `Turn left${rdText}`;
+                if (mod.includes('sharp right')) return `Make a sharp right turn${rdText}`;
+                if (mod.includes('slight right')) return `Turn slightly right${rdText}`;
+                if (mod.includes('right')) return `Turn right${rdText}`;
+                if (mod.includes('uturn')) return `Make a U-turn${rdText}`;
+                return `Continue straight${rdText}`;
+                
+            case 'new name':
+            case 'continue':
+                return `Continue${rdText}`;
+                
+            case 'depart':
+                if (mod.includes('left')) return `Head left${rdText}`;
+                if (mod.includes('right')) return `Head right${rdText}`;
+                return `Start heading${rdText}`;
+                
+            case 'arrive':
+                if (mod.includes('left')) return `Your destination is on the left`;
+                if (mod.includes('right')) return `Your destination is on the right`;
+                return `You have arrived at your destination`;
+                
+            case 'roundabout':
+            case 'rotary':
+                const exit = step.maneuver.exit || '';
+                const exitText = exit ? this.ordinal(exit) + ' exit' : 'the exit';
+                return `At the roundabout, take ${exitText}${rdText}`;
+                
+            case 'merge':
+                if (mod.includes('left')) return `Merge left${rdText}`;
+                if (mod.includes('right')) return `Merge right${rdText}`;
+                return `Merge${rdText}`;
+                
+            case 'on ramp':
+            case 'ramp':
+                return `Take the ramp${rdText}`;
+                
+            case 'off ramp':
+                return `Take the exit${rdText}`;
+                
+            case 'fork':
+                if (mod.includes('left')) return `Keep left at the fork${rdText}`;
+                if (mod.includes('right')) return `Keep right at the fork${rdText}`;
+                return `Continue at the fork${rdText}`;
+                
+            case 'end of road':
+                if (mod.includes('left')) return `At the end of the road, turn left${rdText}`;
+                if (mod.includes('right')) return `At the end of the road, turn right${rdText}`;
+                return `At the end of the road, continue${rdText}`;
+                
+            case 'notification':
+                return step.maneuver.instruction || `Continue${rdText}`;
+                
+            default:
+                // Fallback — use modifier for direction
+                if (mod.includes('sharp left')) return `Sharp left${rdText}`;
+                if (mod.includes('slight left')) return `Slight left${rdText}`;
+                if (mod.includes('left')) return `Turn left${rdText}`;
+                if (mod.includes('sharp right')) return `Sharp right${rdText}`;
+                if (mod.includes('slight right')) return `Slight right${rdText}`;
+                if (mod.includes('right')) return `Turn right${rdText}`;
+                if (mod.includes('uturn')) return `Make a U-turn${rdText}`;
+                return `Continue straight${rdText}`;
+        }
+    },
+
+    ordinal(n) {
+        const s = ['th', 'st', 'nd', 'rd'];
+        const v = n % 100;
+        return n + (s[(v - 20) % 10] || s[v] || s[0]);
+    },
+
+    // Get a short direction word for HUD display
+    getDirectionWord(mod) {
+        if (!mod) return 'Straight';
+        if (mod.includes('sharp left')) return 'Sharp Left';
+        if (mod.includes('slight left')) return 'Slight Left';
+        if (mod.includes('left')) return 'Left';
+        if (mod.includes('sharp right')) return 'Sharp Right';
+        if (mod.includes('slight right')) return 'Slight Right';
+        if (mod.includes('right')) return 'Right';
+        if (mod.includes('uturn')) return 'U-Turn';
+        return 'Straight';
     },
 
     // ── MAIN NAV LOOP ──
     checkProgress(lat, lon) {
         if (this.recalcCooldown > 0) this.recalcCooldown--;
+        if (this.pathCoordinates.length < 2) return;
+        
         const snap = this.snapToRoute(lat, lon);
         this.remainingDistance = this.calcRemaining(snap);
-        
-        // Snapped virtual location for extremely smooth UI/AR updates
+
         const sLatVirtual = snap.snappedLat || lat;
         const sLonVirtual = snap.snappedLon || lon;
 
-        // Arrival
-        if (this.currentStepIndex >= this.steps.length || this.remainingDistance < 15) {
-            this.DOMFast.text('status-text', "🎉 Arrived!");
+        // Arrival detection
+        if (this.remainingDistance < 15) {
             this.DOMFast.text('turn-dist', "0m");
-            this.DOMFast.text('turn-instruction', "You have arrived");
-            this.setArrow('turn-arrow','arrow-3d','straight');
+            this.DOMFast.text('road-name', "Arrived!");
+            this.setArrow('turn-arrow', 'arrow-3d', 'straight');
             if (this.audioEnabled) this.speak("You have arrived at your destination.");
             return;
         }
 
-        // Reroute (30m threshold, 5s cooldown)
-        if (snap.distance > 30 && !this.recalculating && this.recalcCooldown <= 0) {
-            this.recalculating=true; this.recalcCooldown=50;
-            this.speak("Recalculating."); this.DOMFast.text('turn-instruction', "Rerouting...");
-            this.fetchRoute(lat,lon,this.destLat,this.destLon,true).then(()=>{this.recalculating=false;this.DOMFast.text('status-text', "Navigating");}).catch(()=>{this.recalculating=false;});
+        // Reroute detection — adjust threshold by mode
+        const rerouteThreshold = this.travelMode === 'walking' ? 20 : 30;
+        if (snap.distance > rerouteThreshold && !this.recalculating && this.recalcCooldown <= 0) {
+            this.recalculating = true; 
+            this.recalcCooldown = 30;
+            this.speak("Recalculating route.");
+            this.DOMFast.text('road-name', "Rerouting...");
+            this.fetchRoute(lat, lon, this.destLat, this.destLon, true)
+                .then(() => { this.recalculating = false; })
+                .catch(() => { this.recalculating = false; });
             return;
         }
 
-        const step = this.steps[this.currentStepIndex];
-        const sLat=step.maneuver.location[1], sLon=step.maneuver.location[0];
-        // Use snapped virtual location for buttery smooth UI tracking without jitter
-        const distToTurn = this.haversine(sLatVirtual,sLonVirtual,sLat,sLon);
-        const mod = step.maneuver.modifier || 'straight';
+        if (this.currentStepIndex >= this.steps.length) return;
         
-        // Let's use distToTurn for UI drawing
-        const dist = distToTurn;
+        const step = this.steps[this.currentStepIndex];
+        const sLat = step.maneuver.location[1], sLon = step.maneuver.location[0];
+        const distToTurn = this.haversine(sLatVirtual, sLonVirtual, sLat, sLon);
+        const mod = step.maneuver.modifier || 'straight';
 
-        // Throttle heavy DOM updates to ~3 FPS to prevent lag
+        // Throttle DOM updates to ~3 FPS
         const now = Date.now();
         if (now - (this.lastUIDraw || 0) >= 300) {
             this.lastUIDraw = now;
 
             if (step.name) this.updateRoadName(step.name);
+            this.DOMFast.text('turn-dist', this.fmt(distToTurn));
+            this.setArrow('turn-arrow', 'arrow-3d', mod);
 
-            this.DOMFast.text('turn-dist', this.fmt(dist));
-            this.DOMFast.text('turn-instruction', step.maneuver.instruction || 'Proceed');
-            this.setArrow('turn-arrow','arrow-3d', mod);
-
+            // Speed warning
             const kmh = window.GPS.speed * 3.6;
-            const speedLimit = dist > 500 ? 120 : 80;
+            const speedLimit = distToTurn > 500 ? 120 : 80;
             if (kmh > speedLimit) {
                 this.DOMFast.class('speed-warning', 'speed-warn-visible', 'speed-warn-hidden');
-                if (navigator.vibrate) navigator.vibrate([100,50,100]);
+                if (navigator.vibrate) navigator.vibrate([100, 50, 100]);
             } else {
                 this.DOMFast.class('speed-warning', 'speed-warn-hidden', 'speed-warn-visible');
             }
 
-            if (dist < 150) {
-                this.setArrow('hud-arrow-3d','mega-arrow', mod);
+            if (distToTurn < 150) {
+                this.setArrow('hud-arrow-3d', 'mega-arrow', mod);
             }
 
-            this.updateLanes(step, dist);
+            this.updateLanes(step, distToTurn);
             this.updateETAFromSpeed();
-            this.DOMFast.text('total-dist-val', this.fmt(this.remainingDistance));
-            this.DOMFast.text('status-text', "Navigating");
         }
 
-        // Voice
+        // ════════════════════════════════════════════════════
+        // VOICE GUIDANCE — Accurate, clear turn-by-turn
+        // ════════════════════════════════════════════════════
         if (this.audioEnabled) {
-            const instr = step.maneuver.instruction || 'Proceed';
-            if (dist<500 && dist>300 && !this.announced500m) { this.announced500m=true; this.speak(`In ${Math.round(dist)} meters, ${instr}`); }
-            if (dist<200 && dist>100 && !this.announced200m) { this.announced200m=true; this.speak(`In ${Math.round(dist)} meters, ${instr}`); }
-            if (dist<50 && dist>15 && !this.announced50m) { this.announced50m=true; this.speak(`Now, ${instr}`); }
+            const voiceInstr = this.buildVoiceInstruction(step);
+            
+            // Approaching turn announcements
+            if (distToTurn < 500 && distToTurn > 300 && !this.announced500m) {
+                this.announced500m = true;
+                this.speak(`In ${Math.round(distToTurn)} meters, ${voiceInstr}`);
+            }
+            if (distToTurn < 200 && distToTurn > 100 && !this.announced200m) {
+                this.announced200m = true;
+                this.speak(`In ${Math.round(distToTurn)} meters, ${voiceInstr}`);
+            }
+            if (distToTurn < 50 && distToTurn > 15 && !this.announced50m) {
+                this.announced50m = true;
+                this.speak(`Now, ${voiceInstr}`);
+            }
+            
+            // For walking mode, also announce at closer range
+            if (this.travelMode === 'walking') {
+                if (distToTurn < 30 && distToTurn > 10 && !this.announcedWalk30) {
+                    this.announcedWalk30 = true;
+                    this.speak(voiceInstr);
+                }
+            }
         }
 
-        // Step advance with Velocity-Scaled Dynamic Turn Anticipation
-        // At 80km/h (22m/s), radius is ~33m. At 10km/h (2.7m/s), radius is ~12m.
+        // Step advance with velocity-scaled turn anticipation
         let spdMs = window.GPS.speed || 0;
-        const radius = Math.max(8, Math.min((window.GPS.currentAccuracy||10), 20)) + (spdMs * 1.5);
-        if (dist < radius) {
+        const baseRadius = this.travelMode === 'walking' ? 5 : 8;
+        const radius = Math.max(baseRadius, Math.min((window.GPS.currentAccuracy || 10), 20)) + (spdMs * 1.5);
+        
+        if (distToTurn < radius) {
             this.currentStepIndex++;
-            this.announced500m=this.announced200m=this.announced50m=false;
+            this.announced500m = this.announced200m = this.announced50m = false;
+            this.announcedWalk30 = false;
+            
             if (this.currentStepIndex < this.steps.length) {
-                const stepObj = this.steps[this.currentStepIndex];
-                const nm = stepObj.maneuver.modifier || 'straight';
-                this.setArrow('turn-arrow','arrow-3d', nm);
-                
-                // Immediately rebuild the AR path and arrows so it continuously updates on screen dynamically
-                if (window.ARScene && typeof window.ARScene.buildPath === 'function') {
+                const nextStep = this.steps[this.currentStepIndex];
+                const nm = nextStep.maneuver.modifier || 'straight';
+                this.setArrow('turn-arrow', 'arrow-3d', nm);
+
+                // Rebuild AR path
+                if (window.ARScene?.buildPath) {
                     window.ARScene.buildPath();
                     this.lastArBuildLat = lat; this.lastArBuildLon = lon;
                 }
-                
-                // Immediately read out the upcoming turn after we finish the intersection!
+
+                // Announce the NEXT turn
                 if (this.audioEnabled) {
-                    const nLat=stepObj.maneuver.location[1], nLon=stepObj.maneuver.location[0];
-                    const nDist = this.haversine(lat,lon,nLat,nLon);
+                    const nLat = nextStep.maneuver.location[1], nLon = nextStep.maneuver.location[0];
+                    const nDist = this.haversine(lat, lon, nLat, nLon);
+                    const nextVoice = this.buildVoiceInstruction(nextStep);
                     
-                    let genInstr = '';
-                    const mType = stepObj.maneuver.type;
-                    const rdName = stepObj.name ? 'onto ' + stepObj.name : '';
-                    if (mType === 'turn') genInstr = `Turn ${nm} ${rdName}`;
-                    else if (mType === 'new name') genInstr = `Continue ${rdName}`;
-                    else if (mType === 'depart') genInstr = `Head ${nm} ${rdName}`;
-                    else if (mType === 'arrive') genInstr = `Arrive at destination`;
-                    else if (mType === 'roundabout') genInstr = `Take the roundabout and exit ${rdName}`;
-                    else if (mType === 'merge') genInstr = `Merge ${nm} ${rdName}`;
-                    else if (mType === 'on ramp') genInstr = `Take the ramp ${rdName}`;
-                    else if (mType === 'off ramp') genInstr = `Take the exit ${rdName}`;
-                    else if (mType === 'fork') genInstr = `Keep ${nm} at the fork ${rdName}`;
-                    else if (mType === 'end of road') genInstr = `At the end of the road, turn ${nm} ${rdName}`;
-                    else if (nm !== 'straight') genInstr = `Go ${nm} ${rdName}`;
-                    else genInstr = `Continue straight ${rdName}`;
-                    const nextInstr = stepObj.maneuver.instruction || genInstr.trim();
-                    
-                    this.speak(`Next, in ${Math.round(nDist)} meters, ${nextInstr}`);
+                    if (nDist > 30) {
+                        this.speak(`Next, in ${Math.round(nDist)} meters, ${nextVoice}`);
+                    } else {
+                        this.speak(nextVoice);
+                    }
                 }
             }
         }
 
-        // Dynamically rebuild the AR arrows every 20 meters traveled so they never get "left behind"
+        // Dynamically rebuild AR arrows every 15m traveled
         if (!this.lastArBuildLat) {
             this.lastArBuildLat = lat; this.lastArBuildLon = lon;
         } else {
             const distSinceArBuild = this.haversine(lat, lon, this.lastArBuildLat, this.lastArBuildLon);
-            if (distSinceArBuild > 20 && window.ARScene && typeof window.ARScene.buildPath === 'function') {
+            if (distSinceArBuild > 15 && window.ARScene?.buildPath) {
                 window.ARScene.buildPath();
                 this.lastArBuildLat = lat;
                 this.lastArBuildLon = lon;
@@ -482,7 +620,7 @@ window.RouteManager = {
                 { el: document.getElementById('turn-arrow-2d'), baseClass: 'hud-arrow-icon' },
                 { el: document.getElementById('badge-arrow'), baseClass: 'mega-arrow' }
             ];
-            
+
             let deg = 0;
             if (mod === 'sharp left') deg = -135;
             else if (mod === 'left') deg = -90;
@@ -504,9 +642,8 @@ window.RouteManager = {
             });
             return;
         }
-        
+
         const el = document.getElementById(id); if (!el) return;
-        // Exact rotational degree values mapping 
         let deg = 0;
         if (mod === 'sharp left') deg = -135;
         else if (mod === 'left') deg = -90;
@@ -514,7 +651,7 @@ window.RouteManager = {
         else if (mod === 'sharp right') deg = 135;
         else if (mod === 'right') deg = 90;
         else if (mod === 'slight right') deg = 45;
-        
+
         if (mod.includes('uturn')) {
             el.className = base + ' arrow-uturn';
             el.style.rotate = '0deg';
@@ -528,53 +665,80 @@ window.RouteManager = {
     // ── LANES ──
     updateLanes(step, dist) {
         const c = document.getElementById('lane-guidance'); if (!c) return;
-        if (dist>300 || !step.intersections?.length) { c.classList.add('lane-hidden'); return; }
-        const inter = step.intersections[step.intersections.length-1];
+        if (dist > 300 || !step.intersections?.length) { c.classList.add('lane-hidden'); return; }
+        const inter = step.intersections[step.intersections.length - 1];
         if (!inter.lanes?.length) { c.classList.add('lane-hidden'); return; }
-        c.classList.remove('lane-hidden'); c.innerHTML='';
+        c.classList.remove('lane-hidden'); c.innerHTML = '';
         inter.lanes.forEach(l => {
-            const d=document.createElement('div');
-            d.className=`lane-arrow ${l.valid?'lane-active':'lane-inactive'}`;
-            let a='↑'; if(l.indications){if(l.indications.includes('left'))a='←';else if(l.indications.includes('right'))a='→';else if(l.indications.includes('slight left'))a='↖';else if(l.indications.includes('slight right'))a='↗';}
-            d.innerText=a; c.appendChild(d);
+            const d = document.createElement('div');
+            d.className = `lane-arrow ${l.valid ? 'lane-active' : 'lane-inactive'}`;
+            let a = '↑'; 
+            if (l.indications) { 
+                if (l.indications.includes('left')) a = '←'; 
+                else if (l.indications.includes('right')) a = '→'; 
+                else if (l.indications.includes('slight left')) a = '↖'; 
+                else if (l.indications.includes('slight right')) a = '↗'; 
+            }
+            d.innerText = a; c.appendChild(d);
         });
     },
 
     // ── ETA ──
     updateETAFromSpeed() {
-        const s=window.GPS.speed||0;
-        if (s>0.5) this.etaSeconds=this.remainingDistance/s;
+        const s = window.GPS.speed || 0;
+        if (s > 0.3) {
+            this.etaSeconds = this.remainingDistance / s;
+        } else if (this.travelMode === 'walking') {
+            // Walking average ~5 km/h = 1.39 m/s
+            this.etaSeconds = this.remainingDistance / 1.39;
+        } else if (this.travelMode === 'cycling') {
+            // Cycling average ~15 km/h = 4.17 m/s 
+            this.etaSeconds = this.remainingDistance / 4.17;
+        }
         this.updateETADisplay();
     },
 
     updateETADisplay() {
-        const m = Math.round(this.etaSeconds/60);
+        const m = Math.round(this.etaSeconds / 60);
         const a = new Date(Date.now() + this.etaSeconds * 1000);
-        const h = a.getHours(), mi = a.getMinutes(); 
-        this.DOMFast.text('bottom-time', `${h%12||12}:${mi.toString().padStart(2,'0')} ${h>=12?'PM':'AM'}`);
-        
+        const h = a.getHours(), mi = a.getMinutes();
+        this.DOMFast.text('bottom-time', `${h % 12 || 12}:${mi.toString().padStart(2, '0')} ${h >= 12 ? 'PM' : 'AM'}`);
+
         let durStr = '';
         if (m < 60) durStr = `${m} min`;
-        else durStr = `${Math.floor(m/60)}h ${m%60}m`;
+        else durStr = `${Math.floor(m / 60)}h ${m % 60}m`;
         this.DOMFast.text('remaining-time', durStr);
     },
 
-    fmt(m) { return m>=1000?(m/1000).toFixed(1)+' km':Math.round(m)+'m'; },
+    fmt(m) { return m >= 1000 ? (m / 1000).toFixed(1) + ' km' : Math.round(m) + 'm'; },
     updateHUD() { this.DOMFast.text('total-dist-val', this.fmt(this.totalDistance)); },
 
-    haversine(a,b,c,d) {
-        const R=6371e3,p1=a*Math.PI/180,p2=c*Math.PI/180,dp=(c-a)*Math.PI/180,dl=(d-b)*Math.PI/180;
-        const x=Math.sin(dp/2)**2+Math.cos(p1)*Math.cos(p2)*Math.sin(dl/2)**2;
-        return R*2*Math.atan2(Math.sqrt(x),Math.sqrt(1-x));
+    haversine(a, b, c, d) {
+        const R = 6371e3, p1 = a * Math.PI / 180, p2 = c * Math.PI / 180, dp = (c - a) * Math.PI / 180, dl = (d - b) * Math.PI / 180;
+        const x = Math.sin(dp / 2) ** 2 + Math.cos(p1) * Math.cos(p2) * Math.sin(dl / 2) ** 2;
+        return R * 2 * Math.atan2(Math.sqrt(x), Math.sqrt(1 - x));
     },
 
-    speak(t) { if(!this.audioEnabled||!window.speechSynthesis)return; window.speechSynthesis.cancel(); const u=new SpeechSynthesisUtterance(t); u.rate=1; u.lang='en-US'; window.speechSynthesis.speak(u); },
+    speak(t) {
+        if (!this.audioEnabled || !window.speechSynthesis) return;
+        window.speechSynthesis.cancel();
+        const u = new SpeechSynthesisUtterance(t);
+        u.rate = 1.0;
+        u.pitch = 1.0;
+        u.volume = 1.0;
+        u.lang = 'en-US';
+        window.speechSynthesis.speak(u);
+    },
 
     destroy() {
-        this.steps=[]; this.pathCoordinates=[]; this.allRoutes=[]; this.currentStepIndex=0; this.isFullMapOpen=false;
-        try{if(this.routeLayer&&this.mapInstance)this.mapInstance.removeLayer(this.routeLayer);if(this.fullRouteLayer&&this.fullMapInstance)this.fullMapInstance.removeLayer(this.fullRouteLayer);}catch(e){}
-        this.turnMarkers.forEach(m=>{try{this.mapInstance.removeLayer(m);}catch(e){}});
-        this.fullTurnMarkers.forEach(m=>{try{this.fullMapInstance.removeLayer(m);}catch(e){}});
-        this.routeLayer=null;this.fullRouteLayer=null;this.turnMarkers=[];this.fullTurnMarkers=[];
+        this.steps = []; this.pathCoordinates = []; this.allRoutes = []; 
+        this.currentStepIndex = 0; this.isFullMapOpen = false;
+        this.DOMFast.cache = {};
+        try { if (this.routeLayer && this.mapInstance) this.mapInstance.removeLayer(this.routeLayer); } catch(e) {}
+        try { if (this.fullRouteLayer && this.fullMapInstance) this.fullMapInstance.removeLayer(this.fullRouteLayer); } catch(e) {}
+        this.turnMarkers.forEach(m => { try { this.mapInstance.removeLayer(m); } catch(e) {} });
+        this.fullTurnMarkers.forEach(m => { try { this.fullMapInstance.removeLayer(m); } catch(e) {} });
+        this.routeLayer = null; this.fullRouteLayer = null; this.turnMarkers = []; this.fullTurnMarkers = [];
+        this.lastArBuildLat = null; this.lastArBuildLon = null;
     }
 };
