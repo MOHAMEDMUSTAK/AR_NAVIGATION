@@ -108,6 +108,26 @@ window.RouteManager = {
         this.drawRoute(r.geometry.coordinates);
         this.drawTurnMarkers();
         this.updateHUD();
+        
+        // Update destination name in top HUD
+        this.DOMFast.text('dest-name-hud', this.destName || 'Destination');
+        
+        // Set speed limit based on travel mode
+        let speedLimit = 0;
+        if (this.travelMode === 'driving') speedLimit = 60;
+        else if (this.travelMode === 'cycling') speedLimit = 20;
+        else if (this.travelMode === 'walking') speedLimit = 5;
+        
+        const slc = document.getElementById('speed-limit-circle');
+        if (slc) {
+            if (speedLimit > 0) {
+                slc.classList.remove('speed-limit-hidden');
+                this.DOMFast.text('speed-limit-val', speedLimit);
+            } else {
+                slc.classList.add('speed-limit-hidden');
+            }
+        }
+
         if (window.ARScene?.buildPath) window.ARScene.buildPath();
         const p = document.getElementById('route-alternatives-panel');
         if (p) p.classList.add('alt-hidden');
@@ -220,8 +240,8 @@ window.RouteManager = {
                     this.fullUserMarker.setLatLng([d.lat, d.lon]);
                 }
 
-                // Throttle heavy routing to 3 FPS
-                if (!this.lastCheckTime || now - this.lastCheckTime >= 333) {
+                // Check progress at 5 FPS for responsive navigation
+                if (!this.lastCheckTime || now - this.lastCheckTime >= 200) {
                     this.lastCheckTime = now;
                     this.checkProgress(d.lat, d.lon);
                 }
@@ -488,18 +508,44 @@ window.RouteManager = {
             return;
         }
 
-        // Reroute detection — adjust threshold by mode
-        const rerouteThreshold = this.travelMode === 'walking' ? 20 : 30;
-        if (snap.distance > rerouteThreshold && !this.recalculating && this.recalcCooldown <= 0) {
+        // ═══ AGGRESSIVE REROUTE DETECTION ═══
+        // 1. Distance-based: tighter thresholds
+        const rerouteThreshold = this.travelMode === 'walking' ? 15 : 25;
+        
+        // 2. Wrong-way detection: if heading is >120° opposite to route direction
+        let isWrongWay = false;
+        if (snap.index < this.pathCoordinates.length - 1 && window.GPS.speed > 1) {
+            const p1 = this.pathCoordinates[snap.index];
+            const p2 = this.pathCoordinates[snap.index + 1];
+            const routeBearing = window.GPS.calcBearing(p1.lat, p1.lon, p2.lat, p2.lon);
+            let headingDiff = Math.abs(window.GPS.smoothHeading - routeBearing);
+            if (headingDiff > 180) headingDiff = 360 - headingDiff;
+            isWrongWay = headingDiff > 120;
+        }
+        
+        const shouldReroute = (snap.distance > rerouteThreshold) || (isWrongWay && snap.distance > 10);
+        
+        if (shouldReroute && !this.recalculating && this.recalcCooldown <= 0) {
             this.recalculating = true; 
-            this.recalcCooldown = 30;
-            this.speak("Recalculating route.");
+            this.recalcCooldown = 20; // Faster cooldown (was 30)
+            if (isWrongWay) {
+                this.speak("Wrong way. Recalculating route.");
+            } else {
+                this.speak("You have left the route. Recalculating.");
+            }
             this.DOMFast.text('road-name', "Rerouting...");
             this.fetchRoute(lat, lon, this.destLat, this.destLon, true)
                 .then(() => { this.recalculating = false; })
                 .catch(() => { this.recalculating = false; });
             return;
         }
+        
+        // Warn if slightly off route (between 10m and threshold)
+        if (snap.distance > 10 && snap.distance <= rerouteThreshold && !this.offRouteWarned) {
+            this.offRouteWarned = true;
+            if (this.audioEnabled) this.speak("Return to the route.");
+        }
+        if (snap.distance <= 8) this.offRouteWarned = false;
 
         if (this.currentStepIndex >= this.steps.length) return;
         
@@ -702,12 +748,17 @@ window.RouteManager = {
         const m = Math.round(this.etaSeconds / 60);
         const a = new Date(Date.now() + this.etaSeconds * 1000);
         const h = a.getHours(), mi = a.getMinutes();
-        this.DOMFast.text('bottom-time', `${h % 12 || 12}:${mi.toString().padStart(2, '0')} ${h >= 12 ? 'PM' : 'AM'}`);
+        const ampm = h >= 12 ? 'PM' : 'AM';
+        this.DOMFast.text('bottom-time', `${h % 12 || 12}:${mi.toString().padStart(2, '0')} ${ampm}`);
 
         let durStr = '';
         if (m < 60) durStr = `${m} min`;
         else durStr = `${Math.floor(m / 60)}h ${m % 60}m`;
         this.DOMFast.text('remaining-time', durStr);
+        
+        // Update enhanced HUD elements
+        this.DOMFast.text('remaining-eta', durStr);
+        this.DOMFast.text('total-dist-val', this.fmt(this.remainingDistance));
     },
 
     fmt(m) { return m >= 1000 ? (m / 1000).toFixed(1) + ' km' : Math.round(m) + 'm'; },

@@ -148,18 +148,45 @@ html,body{font-family:var(--font);color:var(--text);background:#000;height:100%;
 }
 .hud-left { display: flex; align-items: center; gap: 12px; }
 .hud-arrow-icon { width: 0; height: 0; flex-shrink: 0; transition: rotate 0.3s var(--ease); filter: drop-shadow(0 0 6px rgba(0,240,255,0.5)); }
-.hud-arrow-icon.arrow-straight { border-left: 10px solid transparent; border-right: 10px solid transparent; border-bottom: 22px solid #fff; }
-.hud-arrow-icon.arrow-uturn { border-left: 10px solid transparent; border-right: 10px solid transparent; border-top: 22px solid var(--accent); }
-.turn-info { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
-.turn-dist-text { font-size: 1.25rem; font-weight: 800; color: #fff; text-shadow: 0 2px 10px rgba(0,0,0,0.9); }
+.hud-arrow-icon.arrow-straight { border-left: 12px solid transparent; border-right: 12px solid transparent; border-bottom: 26px solid #fff; }
+.hud-arrow-icon.arrow-uturn { border-left: 12px solid transparent; border-right: 12px solid transparent; border-top: 26px solid var(--accent); }
+.turn-info { display: flex; flex-direction: column; gap: 2px; }
+.road-name-text { font-size: 1.1rem; font-weight: 700; color: #fff; text-shadow: 0 2px 10px rgba(0,0,0,0.9); max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.turn-dist-text { font-size: 1.5rem; font-weight: 800; color: var(--primary); text-shadow: 0 2px 10px rgba(0,0,0,0.9); }
 .hud-dot { color: rgba(255,255,255,0.4); font-size: 0.6rem; }
-.road-name-text { font-size: 1.05rem; font-weight: 600; color: rgba(255,255,255,0.85); text-shadow: 0 2px 8px rgba(0,0,0,0.8); max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.hud-right { display: flex; align-items: center; gap: 10px; }
-#top-time { font-size: 1rem; font-weight: 600; color: #fff; text-shadow: 0 2px 8px rgba(0,0,0,0.8); }
+.hud-right { display: flex; flex-direction: column; align-items: flex-end; gap: 8px; }
+.hud-buttons-ref { display: flex; gap: 14px; align-items: center; margin-bottom: 2px; }
+.hud-ref-icon { 
+    font-size: 0.9rem; color: rgba(255,255,255,0.6); cursor: pointer; 
+    padding-bottom: 4px; border-bottom: 2px solid transparent; transition: all 0.2s;
+}
+.hud-ref-icon:hover, .hud-ref-icon.active { 
+    color: #fff; border-bottom-color: var(--green); 
+}
+.icon-hazard { color: #ffab00; }
+.hud-time-battery { display: flex; align-items: center; gap: 10px; }
+#top-time { font-size: 0.95rem; font-weight: 600; color: #fff; text-shadow: 0 2px 8px rgba(0,0,0,0.8); }
 .battery-wrapper { display: flex; align-items: center; }
-.battery-body { width: 24px; height: 12px; border: 1.5px solid rgba(255,255,255,0.8); border-radius: 3px; padding: 1.5px; background: rgba(0,0,0,0.3); }
+.battery-body { width: 22px; height: 11px; border: 1.5px solid rgba(255,255,255,0.7); border-radius: 2px; padding: 1px; background: rgba(0,0,0,0.2); }
 #battery-level-fill { width: 100%; height: 100%; border-radius: 1px; background: var(--green); transition: width 0.3s ease, background 0.3s ease; }
-.battery-tip { width: 2.5px; height: 6px; background: rgba(255,255,255,0.8); border-radius: 0 2px 2px 0; margin-left: 1px; }
+.battery-tip { width: 2px; height: 5px; background: rgba(255,255,255,0.7); border-radius: 0 1px 1px 0; margin-left: 1px; }
+
+/* Destination Info Bar */
+.dest-info-bar {
+    display: flex; align-items: center; gap: 10px; justify-content: center;
+    padding: 6px 20px; margin-top: -32px;
+    background: rgba(10, 15, 30, 0.75); 
+    backdrop-filter: saturate(180%) blur(10px); /* Limited use for high-spec UI */
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 24px;
+    font-size: 0.75rem; font-weight: 700; color: rgba(255,255,255,0.9);
+    pointer-events: auto; z-index: 11;
+    box-shadow: 0 4px 15px rgba(0,0,0,0.4);
+}
+.dest-name { color: #fff; max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; letter-spacing: 0.2px; }
+.dest-dist { color: var(--primary); font-weight: 800; }
+.dest-eta { color: var(--text-dim); }
+.dest-separator { color: rgba(255,255,255,0.2); font-size: 0.4rem; }
 
 /* ─── CENTRAL TURN BADGE ─────────────────────────────── */
 .top-center-badge {
@@ -215,8 +242,21 @@ html,body{font-family:var(--font);color:var(--text);background:#000;height:100%;
     box-shadow: 0 6px 20px rgba(0,0,0,0.5);
     contain: layout style paint;
 }
-#speed-value { font-size: 2rem; font-weight: 800; color: #fff; line-height: 1; }
+#speed-value { font-size: 2.2rem; font-weight: 800; color: #fff; line-height: 1; }
 .speed-unit { font-size: 0.6rem; font-weight: 600; color: var(--text-dim); text-transform: uppercase; letter-spacing: 1px; margin-top: 2px; }
+
+/* Speed Limit Circle (matching reference — red circle with number) */
+#speed-limit-circle {
+    width: 42px; height: 42px; border-radius: 50%;
+    border: 3px solid #ff3333;
+    background: rgba(255,255,255,0.95);
+    display: flex; align-items: center; justify-content: center;
+    box-shadow: 0 3px 12px rgba(0,0,0,0.5);
+}
+#speed-limit-val {
+    font-size: 1rem; font-weight: 800; color: #000; line-height: 1;
+}
+.speed-limit-hidden { display: none !important; }
 
 /* ─── BOTTOM RIGHT: MINIMAP + ETA ────────────────────── */
 #bottom-right-container {

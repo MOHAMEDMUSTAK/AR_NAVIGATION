@@ -108,19 +108,37 @@ window.GPS = {
     },
 
     // ── Compass ──
+    headingHistory: [],
     handleOrientation(e) {
         // At driving speed, trust GPS bearing instead of compass
-        if (this.speed > 2.0) return;
+        if (this.speed > 2.5) return;
 
         let h = e.webkitCompassHeading !== undefined ? e.webkitCompassHeading : 
                 e.alpha !== null ? (360 - e.alpha) % 360 : null;
         if (h === null) return;
         
-        this.heading = h;
+        // Stabilize heading with a 5-sample median/average filter
+        this.headingHistory.push(h);
+        if (this.headingHistory.length > 5) this.headingHistory.shift();
+        
+        // Circular mean calculation for heading stability
+        let sumX = 0, sumY = 0;
+        this.headingHistory.forEach(val => {
+            const rad = val * Math.PI / 180;
+            sumX += Math.cos(rad);
+            sumY += Math.sin(rad);
+        });
+        const stableHeading = (Math.atan2(sumY, sumX) * 180 / Math.PI + 360) % 360;
+        
+        this.heading = stableHeading;
         let d = this.heading - this.smoothHeading;
         if (d > 180) this.smoothHeading += 360; 
         else if (d < -180) this.smoothHeading -= 360;
-        this.smoothHeading += 0.3 * (this.heading - this.smoothHeading);
+        
+        // Responsive but smooth alpha (0.2 for quick response, 0.05 for high stability)
+        const alpha = this.speed > 0.5 ? 0.25 : 0.12; 
+        this.smoothHeading += alpha * (this.heading - this.smoothHeading);
+        
         if (this.smoothHeading >= 360) this.smoothHeading -= 360; 
         else if (this.smoothHeading < 0) this.smoothHeading += 360;
 

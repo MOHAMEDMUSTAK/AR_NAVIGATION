@@ -54,20 +54,36 @@
             <div class="hud-left">
                 <div id="turn-arrow-2d" class="hud-arrow-icon arrow-straight"></div>
                 <div class="turn-info">
-                    <span id="turn-dist" class="turn-dist-text">--</span>
-                    <span class="hud-dot">•</span>
                     <span id="road-name" class="road-name-text">--</span>
+                    <span id="turn-dist" class="turn-dist-text">--</span>
                 </div>
             </div>
             <div class="hud-right">
-                <span id="top-time">--:--</span>
-                <div class="battery-wrapper">
-                    <div class="battery-body">
-                        <div id="battery-level-fill"></div>
+                <div class="hud-buttons-ref">
+                    <span class="hud-ref-icon" title="Lane Assist">⏫</span>
+                    <span class="hud-ref-icon icon-hazard" title="Hazard">◳!</span>
+                    <span class="hud-ref-icon" title="Help">❓</span>
+                    <span class="hud-ref-icon" title="Favorite">⭐</span>
+                    <span class="hud-ref-icon" title="Menu">⋮⋮⋮</span>
+                </div>
+                <div class="hud-time-battery">
+                    <span id="top-time">--:--</span>
+                    <div class="battery-wrapper">
+                        <div class="battery-body">
+                            <div id="battery-level-fill"></div>
+                        </div>
+                        <div class="battery-tip"></div>
                     </div>
-                    <div class="battery-tip"></div>
                 </div>
             </div>
+        </div>
+        <!-- Destination Info Bar -->
+        <div class="dest-info-bar">
+            <span id="dest-name-hud" class="dest-name">--</span>
+            <span class="dest-separator">·</span>
+            <span id="total-dist-val" class="dest-dist">--</span>
+            <span class="dest-separator">·</span>
+            <span id="remaining-eta" class="dest-eta">--</span>
         </div>
         <!-- Central Floating Turn Badge -->
         <div class="top-center-badge">
@@ -78,12 +94,15 @@
         <div id="lane-guidance" class="lane-hidden"></div>
     </div>
 
-    <!-- Bottom-Left: Audio + Speed -->
+    <!-- Bottom-Left: Audio + Speed + Speed Limit -->
     <div id="bottom-left-container" class="nav-hidden">
         <button id="enable-audio-btn" class="audio-floating-btn">🔊</button>
         <div id="speed-display">
             <span id="speed-value">0</span>
             <span class="speed-unit">km/h</span>
+        </div>
+        <div id="speed-limit-circle" class="speed-limit-hidden">
+            <span id="speed-limit-val">--</span>
         </div>
     </div>
 

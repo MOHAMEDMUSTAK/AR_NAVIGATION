@@ -186,16 +186,16 @@ document.addEventListener('DOMContentLoaded', () => {
                 const hiddenCtx = hiddenCanvas.getContext('2d', { willReadFrequently: true });
 
                 const colorMap = {
-                    'car': { stroke: 'rgba(255,200,0,0.85)', fill: 'rgba(255,200,0,0.12)', label: '#FFD700' },
-                    'truck': { stroke: 'rgba(255,200,0,0.85)', fill: 'rgba(255,200,0,0.12)', label: '#FFD700' },
-                    'bus': { stroke: 'rgba(255,200,0,0.85)', fill: 'rgba(255,200,0,0.12)', label: '#FFD700' },
-                    'motorcycle': { stroke: 'rgba(255,140,0,0.85)', fill: 'rgba(255,140,0,0.1)', label: '#FF8C00' },
-                    'bicycle': { stroke: 'rgba(0,200,255,0.85)', fill: 'rgba(0,200,255,0.08)', label: '#00C8FF' },
-                    'person': { stroke: 'rgba(255,60,80,0.9)', fill: 'rgba(255,60,80,0.1)', label: '#FF3C50' },
-                    'stop sign': { stroke: 'rgba(255,50,50,0.9)', fill: 'rgba(255,50,50,0.12)', label: '#FF3232' },
-                    'traffic light': { stroke: 'rgba(0,255,100,0.85)', fill: 'rgba(0,255,100,0.08)', label: '#00FF64' },
+                    'car': { stroke: '#FFD700', fill: 'rgba(255,215,0,0.15)', label: '#FFD700' },
+                    'truck': { stroke: '#FFD700', fill: 'rgba(255,215,0,0.15)', label: '#FFD700' },
+                    'bus': { stroke: '#FFD700', fill: 'rgba(255,215,0,0.15)', label: '#FFD700' },
+                    'motorcycle': { stroke: '#FF8C00', fill: 'rgba(255,140,0,0.12)', label: '#FF8C00' },
+                    'bicycle': { stroke: '#00E5FF', fill: 'rgba(0,229,255,0.1)', label: '#00E5FF' },
+                    'person': { stroke: '#FF3C50', fill: 'rgba(255,60,80,0.12)', label: '#FF3C50' },
+                    'stop sign': { stroke: '#FF3232', fill: 'rgba(255,50,50,0.15)', label: '#FF3232' },
+                    'traffic light': { stroke: '#00FF64', fill: 'rgba(0,255,100,0.1)', label: '#00FF64' },
                 };
-                const defaultColor = { stroke: 'rgba(0,240,255,0.7)', fill: 'rgba(0,240,255,0.06)', label: '#00F0FF' };
+                const defaultColor = { stroke: '#00E5FF', fill: 'rgba(0,229,255,0.08)', label: '#00E5FF' };
 
                 aiWorker.onmessage = (e) => {
                     if (e.data.type === 'ready') workerReady = true;
@@ -317,7 +317,11 @@ document.addEventListener('DOMContentLoaded', () => {
             const destLat = destCoords.lat;
             const destLon = destCoords.lon;
             saveRecent(dest, destLat, destLon);
-            window.RouteManager.destName = dest;
+            
+            // Clean destination name for HUD (e.g. "Work - 123 Main St")
+            window.RouteManager.destName = dest.split(',').slice(0, 2).join(', ');
+            const hName = document.getElementById('dest-name-hud');
+            if (hName) hName.innerText = window.RouteManager.destName;
 
             // Show UI immediately — don't wait for camera/route
             inputScreen.classList.add('screen-hidden');
