@@ -135,7 +135,7 @@ window.ARScene = {
         this.pathGroup.rotation.set(0, 0, 0);
 
         if (this.xrActive && this.initialHeading !== null) {
-            this.pathGroup.rotation.y = THREE.MathUtils.degToRad(-this.initialHeading);
+            this.pathGroup.rotation.y = THREE.MathUtils.degToRad(this.initialHeading);
         }
 
         // Build path points from snapped index
@@ -143,11 +143,11 @@ window.ARScene = {
         const srCtx = window.RouteManager.lastSnapIndex || 0;
         const curCoords = window.RouteManager.pathCoordinates;
         let pathDist = 0;
-        const maxDist = 200;
+        const maxDist = 1500; // Expanded horizon mapping
 
         for (let i = srCtx; i < curCoords.length; i++) {
             const l = window.RouteManager.latLonToLocal(curCoords[i].lat, curCoords[i].lon);
-            const v = new THREE.Vector3(l.x, 0.02, l.z);
+            const v = new THREE.Vector3(l.x, 0.15, l.z); // Elevated to 15cm
             if (pts.length > 0) {
                 const d = pts[pts.length - 1].distanceTo(v);
                 if (d < 0.3) continue; // Skip too-close points
@@ -159,7 +159,11 @@ window.ARScene = {
 
         if (pts.length < 2) return;
 
-        const curve = new THREE.CatmullRomCurve3(pts);
+        // Linear geometry prevents aggressive intersection "cutting"
+        const curve = new THREE.CurvePath();
+        for (let i = 0; i < pts.length - 1; i++) {
+            curve.add(new THREE.LineCurve3(pts[i], pts[i+1]));
+        }
         const pathLen = curve.getLength();
 
         // ──────────────────────────────────────────────
@@ -177,7 +181,7 @@ window.ARScene = {
                 const tangent = curve.getTangent(u);
                 const mesh = new THREE.Mesh(this.sharedArrowGeo, this.chevronMat);
                 mesh.position.copy(pt);
-                mesh.position.y = 0.02;
+                mesh.position.y = 0.15;
                 const target = pt.clone().add(tangent);
                 mesh.lookAt(target);
                 mesh.userData.u = u;
@@ -193,17 +197,27 @@ window.ARScene = {
         // 2. BRIGHT GREEN LANE BORDER LINES
         //    Matching reference: solid neon green
         // ──────────────────────────────────────────────
-        const segs = Math.max(20, Math.min(80, Math.floor(pathLen / 1.5)));
-        const frames = curve.computeFrenetFrames(segs, false);
         const leftPts = [], rightPts = [];
         const laneWidth = 2.5; // Half-width of the lane
 
-        for (let i = 0; i <= segs; i++) {
-            const pt = curve.getPoint(i / segs);
-            const pL = new THREE.Vector3().copy(pt).addScaledVector(frames.binormals[i], laneWidth);
-            const pR = new THREE.Vector3().copy(pt).addScaledVector(frames.binormals[i], -laneWidth);
-            pL.y = 0.03; pR.y = 0.03;
+        for (let i = 0; i < pts.length - 1; i++) {
+            const A = pts[i];
+            const B = pts[i+1];
+            const dir = new THREE.Vector3().subVectors(B, A).normalize();
+            // True linear binormals to prevent splines from tearing on sharp corners
+            const binormal = new THREE.Vector3(dir.z, 0, -dir.x).normalize();
+            
+            const pL = new THREE.Vector3().copy(A).addScaledVector(binormal, laneWidth);
+            const pR = new THREE.Vector3().copy(A).addScaledVector(binormal, -laneWidth);
+            pL.y = 0.16; pR.y = 0.16; // Slight anti-z-fight bump over chevrons
             leftPts.push(pL); rightPts.push(pR);
+            
+            if (i === pts.length - 2) {
+                const epL = new THREE.Vector3().copy(B).addScaledVector(binormal, laneWidth);
+                const epR = new THREE.Vector3().copy(B).addScaledVector(binormal, -laneWidth);
+                epL.y = 0.16; epR.y = 0.16;
+                leftPts.push(epL); rightPts.push(epR);
+            }
         }
 
         // Create thicker lane lines using tube-like line rendering
@@ -466,7 +480,8 @@ window.ARScene = {
 
             if (spdMs > 2.0) {
                 const euler = new THREE.Euler().setFromQuaternion(this.camera.quaternion, "YXZ");
-                const targetY = -(euler.y + THREE.MathUtils.degToRad(window.GPS.smoothHeading));
+                // Correctly mapping clockwise initial heading into standard counter-clockwise space
+                const targetY = euler.y + THREE.MathUtils.degToRad(window.GPS.smoothHeading);
                 let dY = targetY - this.pathGroup.rotation.y;
                 while (dY > Math.PI) dY -= Math.PI * 2;
                 while (dY < -Math.PI) dY += Math.PI * 2;
@@ -499,7 +514,7 @@ window.ARScene = {
                         const pt = ch.userData.curve.getPoint(u);
                         const tan = ch.userData.curve.getTangent(u);
                         mesh.position.copy(pt);
-                        mesh.position.y = 0.02;
+                        mesh.position.y = 0.15;
                         mesh.lookAt(pt.clone().add(tan));
                     } catch(e) {}
 
