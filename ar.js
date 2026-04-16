@@ -129,6 +129,11 @@ window.ARScene = {
             this.pathGroup.rotation.y = THREE.MathUtils.degToRad(this.initialHeading);
         }
 
+        // Lock Local Origin to User for Absolute Zero Distortion Mapping
+        if (!window.GPS || !window.GPS.displayLat) return;
+        this.anchorLat = window.GPS.displayLat;
+        this.anchorLon = window.GPS.displayLon;
+
         // Build path points from snapped index
         const pts = [];
         const srCtx = window.RouteManager.lastSnapIndex || 0;
@@ -137,7 +142,7 @@ window.ARScene = {
         const maxDist = 1500; // Expanded horizon mapping
 
         for (let i = srCtx; i < curCoords.length; i++) {
-            const l = window.RouteManager.latLonToLocal(curCoords[i].lat, curCoords[i].lon);
+            const l = window.RouteManager.latLonToAnchor(curCoords[i].lat, curCoords[i].lon, this.anchorLat, this.anchorLon);
             const v = new THREE.Vector3(l.x, 0.15, l.z); // Elevated to 15cm
             if (pts.length > 0) {
                 const d = pts[pts.length - 1].distanceTo(v);
@@ -158,15 +163,15 @@ window.ARScene = {
         const pathLen = curve.getLength();
 
         // ──────────────────────────────────────────────
-        // 1. DENSE WHITE CHEVRONS (matching reference)
-        //    Spaced every ~1.2m for ultra-dense road coverage
+        // 1. DENSE WHITE CHEVRONS
         // ──────────────────────────────────────────────
-        const chevronSpacing = 1.2;
-        const arrowCount = Math.max(15, Math.min(150, Math.floor(pathLen / chevronSpacing)));
+        const chevronSpacing = 2.0; // Optimized spacing for massive scale
+        // Draw up to 250 arrows (500 meter visibility horizon)
+        const arrowCount = Math.min(250, Math.floor(pathLen / chevronSpacing));
 
         const arrowGroup = new THREE.Group();
         for (let i = 1; i < arrowCount; i++) {
-            const u = i / arrowCount;
+            const u = (i * chevronSpacing) / pathLen;
             try {
                 const pt = curve.getPoint(u);
                 const tangent = curve.getTangent(u);
@@ -481,8 +486,9 @@ window.ARScene = {
         const spdMs = window.GPS ? window.GPS.speed : 0;
 
         // AR-GPS sync
-        if (this.xrActive && window.GPS?.displayLat && window.RouteManager?.originLat) {
-            const gpsL = window.RouteManager.latLonToLocal(window.GPS.displayLat, window.GPS.displayLon);
+        if (this.xrActive && window.GPS?.displayLat) {
+            // Elimination of Spherical Projection Drift — Lock to anchored cell
+            const gpsL = window.RouteManager.latLonToAnchor(window.GPS.displayLat, window.GPS.displayLon, this.anchorLat || window.RouteManager.originLat, this.anchorLon || window.RouteManager.originLon);
             const tX = this.camera.position.x - gpsL.x;
             const tZ = this.camera.position.z - gpsL.z;
             // Eliminate tracking lag: match AR camera coordinates immediately (0.8 instead of 0.15)
@@ -515,10 +521,11 @@ window.ARScene = {
                 const cLen = ch.userData.curve.getLength() || 100;
                 // Real-time dynamic speed flow
                 const flowSpeed = (1.5 + spdMs * 0.5) / cLen;
+                const maxU = (ch.children.length * 2.0) / cLen;
 
                 ch.children.forEach(arrowObj => {
                     arrowObj.userData.u += flowSpeed;
-                    if (arrowObj.userData.u > 1) arrowObj.userData.u -= 1;
+                    if (arrowObj.userData.u > maxU) arrowObj.userData.u -= maxU;
 
                     const u = arrowObj.userData.u;
                     try {

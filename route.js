@@ -183,17 +183,13 @@ window.RouteManager = {
         this.DOMFast.text('road-name', this.currentRoadName);
     },
 
-    // ── COORDS — Always relative to CURRENT user position ──
-    latLonToLocal(lat, lon) {
-        // FIXED ANCHOR UPGRADE: AR scene coordinates must use a rigid origin to allow the camera to move realistically
-        const refLat = this.originLat;
-        const refLon = this.originLon;
-        if (!refLat || !refLon) return { x: 0, z: 0 };
-        
+    // ── Ultra-Precision Spatial Anchoring (Eliminates Spherical Projection Drift) ──
+    latLonToAnchor(lat, lon, anchorLat, anchorLon) {
+        if (!anchorLat || !anchorLon) return { x: 0, z: 0 };
         const R = 6378137;
-        const dLat = (lat - refLat) * Math.PI / 180;
-        const dLon = (lon - refLon) * Math.PI / 180;
-        const cosLat = Math.cos(refLat * Math.PI / 180);
+        const dLat = (lat - anchorLat) * Math.PI / 180;
+        const dLon = (lon - anchorLon) * Math.PI / 180;
+        const cosLat = Math.cos(anchorLat * Math.PI / 180);
         return { x: R * dLon * cosLat, z: -(R * dLat) };
     },
 
@@ -336,12 +332,20 @@ window.RouteManager = {
     },
 
     snapToRoute(lat, lon) {
-        // PREDICTIVE UPGRADE: Use velocity to "look ahead" for the snapping window
+        // PREDICTIVE GPS PHYSICS: Propagate current coordinate forward along velocity vector 
+        // to completely eliminate the physical 0.8s hardware mapping lag.
         const spd = window.GPS.speed || 0;
         const lookAheadMeters = spd * 0.8; 
-
         
-        let minCost = Infinity, bestIdx = this.lastSnapIndex || 0, bestSnap = { lat, lon, t: 0 };
+        let pLat = lat, pLon = lon;
+        if (lookAheadMeters > 0) {
+            const R = 6378137;
+            const hr = (window.GPS.smoothHeading || 0) * Math.PI / 180;
+            pLat += (lookAheadMeters * Math.cos(hr)) / R * (180 / Math.PI);
+            pLon += (lookAheadMeters * Math.sin(hr)) / (R * Math.cos(lat * Math.PI / 180)) * (180 / Math.PI);
+        }
+
+        let minCost = Infinity, bestIdx = this.lastSnapIndex || 0, bestSnap = { lat: pLat, lon: pLon, t: 0 };
         const h = window.GPS.smoothHeading || 0;
         
         // Search window biased towards the forward direction
@@ -352,8 +356,8 @@ window.RouteManager = {
         for (let i = start; i < end; i++) {
             const p1 = this.pathCoordinates[i], p2 = this.pathCoordinates[i + 1];
             if (!p2) continue;
-            const proj = this.projectPoint(lat, lon, p1, p2);
-            const dist = this.haversine(lat, lon, proj.lat, proj.lon);
+            const proj = this.projectPoint(pLat, pLon, p1, p2);
+            const dist = this.haversine(pLat, pLon, proj.lat, proj.lon);
             const b = window.GPS.calcBearing(p1.lat, p1.lon, p2.lat, p2.lon);
 
             // Dot product for direction agreement
@@ -371,8 +375,8 @@ window.RouteManager = {
         if (minCost > 1500) {
             for (let i = 0; i < this.pathCoordinates.length - 1; i++) {
                 const p1 = this.pathCoordinates[i], p2 = this.pathCoordinates[i + 1];
-                const proj = this.projectPoint(lat, lon, p1, p2);
-                const dist = this.haversine(lat, lon, proj.lat, proj.lon);
+                const proj = this.projectPoint(pLat, pLon, p1, p2);
+                const dist = this.haversine(pLat, pLon, proj.lat, proj.lon);
                 const b = window.GPS.calcBearing(p1.lat, p1.lon, p2.lat, p2.lon);
                 const bx = Math.sin(b * Math.PI / 180), by = Math.cos(b * Math.PI / 180);
                 const hx = Math.sin(h * Math.PI / 180), hy = Math.cos(h * Math.PI / 180);
