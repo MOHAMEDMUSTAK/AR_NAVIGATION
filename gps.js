@@ -100,8 +100,8 @@ window.GPS = {
             state.init = true; 
             return state.x; 
         }
-        // Adaptive process noise based on speed
-        state.q = this.speed > 5 ? 0.0001 : this.speed > 1 ? 0.00005 : 0.00001;
+        // Adaptive process noise based on speed (tightened to fix "none is accurate" bouncy GPS)
+        state.q = this.speed > 5 ? 0.000001 : this.speed > 1 ? 0.0000005 : 0.0000002;
         state.r = Math.max(0.00001, accuracy * accuracy * 0.00000001);
         state.p += state.q;
         state.k = state.p / (state.p + state.r);
@@ -182,9 +182,11 @@ window.GPS = {
         this.currentLat = this.kUpdate(this.kalman.lat, lat, acc);
         this.currentLon = this.kUpdate(this.kalman.lon, lon, acc);
         
-        // Display position snaps to Kalman GPS on each update
-        this.displayLat = this.currentLat;
-        this.displayLon = this.currentLon;
+        // Initialize displayLat only once. DR smooths it! Jumpy hard-snaps are bad.
+        if (this.displayLat === null) {
+            this.displayLat = this.currentLat;
+            this.displayLon = this.currentLon;
+        }
 
         // Speed — prefer GPS speed, fallback to computed
         if (pos.coords.speed !== null && pos.coords.speed >= 0) {
@@ -247,6 +249,12 @@ window.GPS = {
         if (this.displayLat !== null) {
             this.displayLat += dLat;
             this.displayLon += dLon;
+            
+            // Soft anchor DR to pure GPS to correct drift smoothly (5% correction per frame)
+            if (this.currentLat !== null) {
+                this.displayLat += (this.currentLat - this.displayLat) * 0.05;
+                this.displayLon += (this.currentLon - this.displayLon) * 0.05;
+            }
         }
         
         // At 60fps, we notify at the same rate for peak fluidity

@@ -141,13 +141,12 @@ const initApp = () => {
     // ═══ CAMERA — HD QUALITY ════════════════════════════
     async function startCamera() {
         try {
-            // Request HD resolution for clear camera feed
+            // Request best available rear camera without overly strict constraints
             const stream = await navigator.mediaDevices.getUserMedia({
                 video: {
                     facingMode: { ideal: 'environment' },
-                    width: { ideal: 1920, min: 1280 },
-                    height: { ideal: 1080, min: 720 },
-                    frameRate: { ideal: 30, max: 30 }
+                    width: { ideal: 1920 },
+                    height: { ideal: 1080 }
                 },
                 audio: false
             });

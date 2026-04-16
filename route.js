@@ -185,9 +185,9 @@ window.RouteManager = {
 
     // ── COORDS — Always relative to CURRENT user position ──
     latLonToLocal(lat, lon) {
-        // PRECISION UPGRADE: Use high-frequency display coordinates for sub-meter AR anchoring
-        const refLat = window.GPS?.displayLat !== null ? window.GPS.displayLat : (window.GPS?.currentLat || this.originLat);
-        const refLon = window.GPS?.displayLon !== null ? window.GPS.displayLon : (window.GPS?.currentLon || this.originLon);
+        // FIXED ANCHOR UPGRADE: AR scene coordinates must use a rigid origin to allow the camera to move realistically
+        const refLat = this.originLat;
+        const refLon = this.originLon;
         if (!refLat || !refLon) return { x: 0, z: 0 };
         
         const R = 6378137;
@@ -659,7 +659,8 @@ window.RouteManager = {
             this.lastArBuildLat = lat; this.lastArBuildLon = lon;
         } else {
             const distSinceArBuild = this.haversine(lat, lon, this.lastArBuildLat, this.lastArBuildLon);
-            if (distSinceArBuild > 15 && window.ARScene?.buildPath) {
+            // Increased to 60m to drastically reduce stuttering caused by geometric rebuilds
+            if (distSinceArBuild > 60 && window.ARScene?.buildPath) {
                 window.ARScene.buildPath();
                 this.lastArBuildLat = lat;
                 this.lastArBuildLon = lon;

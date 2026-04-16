@@ -105,6 +105,10 @@ window.ARScene = {
             side: THREE.DoubleSide,
             depthWrite: false
         });
+        
+        // Cache geometry globally to prevent massive GC lag every 60m
+        this.sharedArrowGeo = new THREE.PlaneGeometry(4.2, 4.2);
+        this.sharedArrowGeo.rotateX(-Math.PI / 2);
     },
 
     // ════════════════════════════════════════════════════════
@@ -164,8 +168,6 @@ window.ARScene = {
         // ──────────────────────────────────────────────
         const chevronSpacing = 1.2;
         const arrowCount = Math.max(15, Math.min(150, Math.floor(pathLen / chevronSpacing)));
-        const arrowGeo = new THREE.PlaneGeometry(4.2, 4.2);
-        arrowGeo.rotateX(-Math.PI / 2); // Flat on ground
 
         const arrowGroup = new THREE.Group();
         for (let i = 1; i < arrowCount; i++) {
@@ -173,7 +175,7 @@ window.ARScene = {
             try {
                 const pt = curve.getPoint(u);
                 const tangent = curve.getTangent(u);
-                const mesh = new THREE.Mesh(arrowGeo, this.chevronMat);
+                const mesh = new THREE.Mesh(this.sharedArrowGeo, this.chevronMat);
                 mesh.position.copy(pt);
                 mesh.position.y = 0.02;
                 const target = pt.clone().add(tangent);
@@ -458,8 +460,9 @@ window.ARScene = {
             const gpsL = window.RouteManager.latLonToLocal(window.GPS.displayLat, window.GPS.displayLon);
             const tX = this.camera.position.x - gpsL.x;
             const tZ = this.camera.position.z - gpsL.z;
-            this.pathGroup.position.x += (tX - this.pathGroup.position.x) * 0.15;
-            this.pathGroup.position.z += (tZ - this.pathGroup.position.z) * 0.15;
+            // Eliminate tracking lag: match AR camera coordinates immediately (0.8 instead of 0.15)
+            this.pathGroup.position.x += (tX - this.pathGroup.position.x) * 0.8;
+            this.pathGroup.position.z += (tZ - this.pathGroup.position.z) * 0.8;
 
             if (spdMs > 2.0) {
                 const euler = new THREE.Euler().setFromQuaternion(this.camera.quaternion, "YXZ");
