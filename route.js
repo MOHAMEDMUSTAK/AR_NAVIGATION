@@ -519,13 +519,16 @@ window.RouteManager = {
             return;
         }
 
-        // ═══ AGGRESSIVE REROUTE DETECTION ═══
-        // 1. Distance-based: tighter thresholds
-        const rerouteThreshold = this.travelMode === 'walking' ? 15 : 25;
+        // ═══ STABILIZED REROUTE DETECTION ═══
+        this.offRouteCounter = this.offRouteCounter || 0;
         
-        // 2. Wrong-way detection: if heading is >120° opposite to route direction
+        // 1. Distance-based: Relaxed to absorb phone GPS inaccuracy around trees/buildings (35m for driving, 20m for walking)
+        const rerouteThreshold = this.travelMode === 'walking' ? 20 : 35;
+        let spdMs = window.GPS.speed || 0;
+        
+        // 2. Wrong-way detection: Require significant speed (>3 m/s) to trust compass heading and avoid jitter at red lights
         let isWrongWay = false;
-        if (snap.index < this.pathCoordinates.length - 1 && window.GPS.speed > 1) {
+        if (snap.index < this.pathCoordinates.length - 1 && spdMs > 3.0) {
             const p1 = this.pathCoordinates[snap.index];
             const p2 = this.pathCoordinates[snap.index + 1];
             const routeBearing = window.GPS.calcBearing(p1.lat, p1.lon, p2.lat, p2.lon);
@@ -534,11 +537,19 @@ window.RouteManager = {
             isWrongWay = headingDiff > 120;
         }
         
-        const shouldReroute = (snap.distance > rerouteThreshold) || (isWrongWay && snap.distance > 8);
+        const shouldReroute = (snap.distance > rerouteThreshold) || (isWrongWay && snap.distance > 15);
         
-        if (shouldReroute && !this.recalculating && this.recalcCooldown <= 0) {
+        if (shouldReroute) {
+            this.offRouteCounter++;
+        } else {
+            this.offRouteCounter = 0; // Immediate reset if back on expected track
+        }
+        
+        // Must be continuously off-route for at least 10 frames (~2.0 seconds) to trigger global logic breakdown
+        if (this.offRouteCounter > 10 && !this.recalculating && this.recalcCooldown <= 0) {
             this.recalculating = true; 
             this.recalcCooldown = 15; // Fast reroute response
+            this.offRouteCounter = 0;
             if (isWrongWay && spdMs > 3) {
                 this.speak("Wrong way. Recalculating route.");
             } else if (snap.distance > rerouteThreshold) {
