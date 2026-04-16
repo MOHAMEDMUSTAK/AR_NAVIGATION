@@ -23,7 +23,11 @@ window.ARScene = {
         this.renderer.xr.enabled = true;
         c.appendChild(this.renderer.domElement);
 
-        this.scene.add(new THREE.AmbientLight(0xffffff, 1.0));
+        this.scene.add(new THREE.AmbientLight(0xffffff, 0.4));
+        const dirLight = new THREE.DirectionalLight(0xffffff, 0.9);
+        dirLight.position.set(0, 100, 0); // Top-down illumination for 3D chevrons
+        this.scene.add(dirLight);
+
         this.scene.add(this.pathGroup);
         this.createChevronTexture();
 
@@ -55,60 +59,47 @@ window.ARScene = {
     // with cyan glow, looks like road lane markings
     // ════════════════════════════════════════════════════════
     createChevronTexture() {
-        const cv = document.createElement('canvas');
-        cv.width = 256; cv.height = 256;
-        const ctx = cv.getContext('2d');
-        ctx.clearRect(0, 0, 256, 256);
+        // True 3D Extruded Block Arrow based on User Reference Images
+        const shape = new THREE.Shape();
+        shape.moveTo(-1.6, -2.2);
+        shape.lineTo(0, 2.2);
+        shape.lineTo(1.6, -2.2);
+        shape.lineTo(0, -0.8);
+        shape.lineTo(-1.6, -2.2);
 
-        ctx.lineCap = 'round';
-        ctx.lineJoin = 'miter';
-        ctx.miterLimit = 2;
+        const extrudeSettings = {
+            depth: 0.25,
+            bevelEnabled: true,
+            bevelSegments: 2,
+            steps: 1,
+            bevelSize: 0.08,
+            bevelThickness: 0.08
+        };
 
-        // Layer 1: Wide cyan glow (outer)
-        ctx.shadowColor = '#00e5ff';
-        ctx.shadowBlur = 35;
-        ctx.strokeStyle = 'rgba(0, 229, 255, 0.4)';
-        ctx.lineWidth = 44;
-        ctx.beginPath();
-        ctx.moveTo(28, 195);
-        ctx.lineTo(128, 65);
-        ctx.lineTo(228, 195);
-        ctx.stroke();
+        this.sharedArrowGeo = new THREE.ExtrudeGeometry(shape, extrudeSettings);
+        this.sharedArrowGeo.rotateX(-Math.PI / 2); // Flat on ground, points forward (-Z)
+        
+        // Edge geometry for holographic wireframe aesthetic (Reference Image 2)
+        this.sharedEdgeGeo = new THREE.EdgesGeometry(this.sharedArrowGeo);
 
-        // Layer 2: Bright Cyan core (matching reference)
-        ctx.shadowColor = '#00ffff';
-        ctx.shadowBlur = 15;
-        ctx.strokeStyle = '#00ffff';
-        ctx.lineWidth = 20;
-        ctx.beginPath();
-        ctx.moveTo(28, 195);
-        ctx.lineTo(128, 65);
-        ctx.lineTo(228, 195);
-        ctx.stroke();
-
-        // Layer 3: Intense white center highlight
-        ctx.shadowBlur = 5;
-        ctx.strokeStyle = '#ffffff';
-        ctx.lineWidth = 6;
-        ctx.beginPath();
-        ctx.moveTo(28, 195);
-        ctx.lineTo(128, 65);
-        ctx.lineTo(228, 195);
-        ctx.stroke();
-
-        const tex = new THREE.CanvasTexture(cv);
-        tex.anisotropy = 4;
-
-        this.chevronMat = new THREE.MeshBasicMaterial({
-            map: tex, color: 0xffffff,
-            transparent: true, opacity: 0.92,
-            side: THREE.DoubleSide,
-            depthWrite: false
+        // Solid translucent glowing core
+        this.chevronMat = new THREE.MeshPhongMaterial({
+            color: 0x00e5ff,
+            emissive: 0x0088ff,
+            emissiveIntensity: 0.6,
+            transparent: true,
+            opacity: 0.75,
+            shininess: 120,
+            side: THREE.FrontSide
         });
         
-        // Cache geometry globally to prevent massive GC lag every 60m
-        this.sharedArrowGeo = new THREE.PlaneGeometry(4.2, 4.2);
-        this.sharedArrowGeo.rotateX(-Math.PI / 2);
+        // Glowing wireframe outline material
+        this.edgeMat = new THREE.LineBasicMaterial({
+            color: 0x00ffff,
+            linewidth: 2,
+            transparent: true,
+            opacity: 0.95
+        });
     },
 
     // ════════════════════════════════════════════════════════
@@ -179,14 +170,25 @@ window.ARScene = {
             try {
                 const pt = curve.getPoint(u);
                 const tangent = curve.getTangent(u);
-                const mesh = new THREE.Mesh(this.sharedArrowGeo, this.chevronMat);
-                mesh.position.copy(pt);
-                mesh.position.y = 0.15;
+                
+                // Composite 3D Arrow Group (Core + Glowing Edges)
+                const arrowObj = new THREE.Group();
+                arrowObj.position.copy(pt);
+                arrowObj.position.y = 0.15;
                 const target = pt.clone().add(tangent);
-                mesh.lookAt(target);
-                mesh.userData.u = u;
-                mesh.userData.baseU = u;
-                arrowGroup.add(mesh);
+                arrowObj.lookAt(target);
+                
+                // Add the solid core
+                const mesh = new THREE.Mesh(this.sharedArrowGeo, this.chevronMat);
+                arrowObj.add(mesh);
+                
+                // Add the glowing edges (Holographic effect)
+                const edges = new THREE.LineSegments(this.sharedEdgeGeo, this.edgeMat);
+                arrowObj.add(edges);
+                
+                arrowObj.userData.u = u;
+                arrowObj.userData.baseU = u;
+                arrowGroup.add(arrowObj);
             } catch(e) {}
         }
         arrowGroup.userData.isChevronGroup = true;
@@ -198,7 +200,7 @@ window.ARScene = {
         //    Matching reference: solid neon green
         // ──────────────────────────────────────────────
         const leftPts = [], rightPts = [];
-        const laneWidth = 2.5; // Half-width of the lane
+        const laneWidth = 2.8; // Expanded width to fit 3D chevrons perfectly
 
         for (let i = 0; i < pts.length - 1; i++) {
             const A = pts[i];
@@ -305,18 +307,27 @@ window.ARScene = {
         const g = new THREE.Group();
         const col = isNext ? 0x00b8ff : 0x8844ff;
 
-        // Vertical beacon
-        const beamGeo = new THREE.CylinderGeometry(0.8, 0.2, 10, 8, 1, true);
-        beamGeo.translate(0, 5, 0);
+        // Epic Vertical Sci-Fi Beacon
+        const beamGeo = new THREE.CylinderGeometry(1.5, 0.5, 30, 16, 1, true);
+        beamGeo.translate(0, 15, 0);
         const beamMat = new THREE.MeshBasicMaterial({
-            color: col, transparent: true, opacity: 0.25,
-            side: THREE.DoubleSide, depthWrite: false
+            color: col, transparent: true, opacity: 0.45,
+            side: THREE.DoubleSide, depthWrite: false, blending: THREE.AdditiveBlending
         });
         g.add(new THREE.Mesh(beamGeo, beamMat));
+        
+        // Inner core beam
+        const coreGeo = new THREE.CylinderGeometry(0.4, 0.1, 30, 8, 1, true);
+        coreGeo.translate(0, 15, 0);
+        const coreMat = new THREE.MeshBasicMaterial({
+            color: 0xffffff, transparent: true, opacity: 0.8,
+            side: THREE.DoubleSide, depthWrite: false, blending: THREE.AdditiveBlending
+        });
+        g.add(new THREE.Mesh(coreGeo, coreMat));
 
         // Floating sign
         const signGroup = new THREE.Group();
-        signGroup.position.set(0, 14, 0);
+        signGroup.position.set(0, 22, 0);
 
         // Dark circle backplate
         const bgMat = new THREE.MeshBasicMaterial({
@@ -502,26 +513,27 @@ window.ARScene = {
             // Chevron flow animation
             if (ch.userData.isChevronGroup && ch.userData.curve) {
                 const cLen = ch.userData.curve.getLength() || 100;
-                // Speed-proportional flow
-                const flowSpeed = (1.0 + spdMs * 0.4) / cLen;
+                // Real-time dynamic speed flow
+                const flowSpeed = (1.5 + spdMs * 0.5) / cLen;
 
-                ch.children.forEach(mesh => {
-                    mesh.userData.u += flowSpeed;
-                    if (mesh.userData.u > 1) mesh.userData.u -= 1;
+                ch.children.forEach(arrowObj => {
+                    arrowObj.userData.u += flowSpeed;
+                    if (arrowObj.userData.u > 1) arrowObj.userData.u -= 1;
 
-                    const u = mesh.userData.u;
+                    const u = arrowObj.userData.u;
                     try {
                         const pt = ch.userData.curve.getPoint(u);
                         const tan = ch.userData.curve.getTangent(u);
-                        mesh.position.copy(pt);
-                        mesh.position.y = 0.15;
-                        mesh.lookAt(pt.clone().add(tan));
+                        arrowObj.position.copy(pt);
+                        arrowObj.position.y = 0.15;
+                        arrowObj.lookAt(pt.clone().add(tan));
                     } catch(e) {}
 
-                    // Fade edges smoothly
+                    // Fade scale to gracefully enter/exit the camera view without clipping
                     const edgeFade = Math.sin(u * Math.PI);
-                    const s = Math.max(0.01, Math.min(1, edgeFade * 1.8));
-                    mesh.scale.set(s, s, s);
+                    let s = Math.max(0.01, Math.min(1.2, edgeFade * 2.0));
+                    if (u < 0.05) s *= (u / 0.05); // Pinch close to camera
+                    arrowObj.scale.set(s, s, s);
                 });
             }
 
