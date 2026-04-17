@@ -1,12 +1,14 @@
-// ar.js — Production AR v5 — Matches Reference Image
-// Dense white chevrons on road, bright green lane lines, floating turn indicators
+// ar.js — Production AR v6 — Ground Glow + Pulsing Chevrons + Compass
+// Dense holographic chevrons, glowing road surface, floating turn beacons
 
 window.ARScene = {
     scene: null, camera: null, renderer: null,
     pathGroup: new THREE.Group(),
-    chevronMat: null,
+    chevronMat: null, edgeMat: null,
+    groundGlowMat: null,
     xrActive: false, initialHeading: null,
     lastBuildTime: 0,
+    compassHeading: 0,
 
     init() {
         const c = document.getElementById('ar-container');
@@ -244,6 +246,12 @@ window.ARScene = {
         this.addLaneStrip(rightPts, 0x00ff44, 0.35);
 
         // ──────────────────────────────────────────────
+        // 2b. GROUND GLOW STRIP — Translucent road highlight
+        //     Creates a premium Google-Maps-like blue road surface
+        // ──────────────────────────────────────────────
+        this.addLaneStrip(pts, 0x00b8ff, laneWidth * 2.0, 0.08, 0.18);
+
+        // ──────────────────────────────────────────────
         // 3. FLOATING TURN INDICATORS (blue circle + arrow)
         //    Matching reference: 3D floating signage
         // ──────────────────────────────────────────────
@@ -270,8 +278,10 @@ window.ARScene = {
     },
 
     // ── Lane Strip (thin mesh for visible line thickness) ──
-    addLaneStrip(points, color, width) {
+    addLaneStrip(points, color, width, yOffset, opacity) {
         if (points.length < 2) return;
+        const stripY = yOffset || 0;
+        const stripOpacity = opacity || 0.7;
         const positions = [];
         for (let i = 0; i < points.length - 1; i++) {
             const p1 = points[i], p2 = points[i + 1];
@@ -279,13 +289,14 @@ window.ARScene = {
             const len = Math.sqrt(dx * dx + dz * dz);
             if (len === 0) continue;
             const nx = -dz / len * width * 0.5, nz = dx / len * width * 0.5;
+            const y1 = (p1.y || 0.16) + stripY, y2 = (p2.y || 0.16) + stripY;
             positions.push(
-                p1.x + nx, p1.y, p1.z + nz,
-                p1.x - nx, p1.y, p1.z - nz,
-                p2.x + nx, p2.y, p2.z + nz,
-                p2.x - nx, p2.y, p2.z - nz,
-                p2.x + nx, p2.y, p2.z + nz,
-                p1.x - nx, p1.y, p1.z - nz
+                p1.x + nx, y1, p1.z + nz,
+                p1.x - nx, y1, p1.z - nz,
+                p2.x + nx, y2, p2.z + nz,
+                p2.x - nx, y2, p2.z - nz,
+                p2.x + nx, y2, p2.z + nz,
+                p1.x - nx, y1, p1.z - nz
             );
         }
         const geo = new THREE.BufferGeometry();
@@ -294,7 +305,7 @@ window.ARScene = {
         const mat = new THREE.MeshBasicMaterial({
             color: color,
             transparent: true,
-            opacity: 0.7,
+            opacity: stripOpacity,
             side: THREE.DoubleSide,
             depthWrite: false
         });
@@ -479,11 +490,33 @@ window.ARScene = {
     },
 
     // ════════════════════════════════════════════════════════
-    // ANIMATE LOOP
+    // ANIMATE LOOP — 60fps Rendering + Pulsing Effects
     // ════════════════════════════════════════════════════════
     animate() {
         const t = Date.now() * 0.003;
         const spdMs = window.GPS ? window.GPS.speed : 0;
+
+        // Compass heading sync
+        if (window.GPS) {
+            this.compassHeading = window.GPS.smoothHeading || 0;
+            const compassEl = document.getElementById('compass-heading');
+            if (compassEl) compassEl.style.transform = `rotate(${-this.compassHeading}deg)`;
+            const compassValEl = document.getElementById('compass-value');
+            if (compassValEl) {
+                const dirs = ['N','NE','E','SE','S','SW','W','NW'];
+                compassValEl.innerText = dirs[Math.round(this.compassHeading / 45) % 8];
+            }
+        }
+
+        // Pulsing chevron glow effect
+        if (this.chevronMat) {
+            const pulse = 0.5 + Math.sin(t * 1.8) * 0.15;
+            this.chevronMat.emissiveIntensity = pulse;
+            this.chevronMat.opacity = 0.65 + Math.sin(t * 2.2) * 0.1;
+        }
+        if (this.edgeMat) {
+            this.edgeMat.opacity = 0.8 + Math.sin(t * 2.5) * 0.15;
+        }
 
         // AR-GPS sync
         if (this.xrActive && window.GPS?.displayLat) {

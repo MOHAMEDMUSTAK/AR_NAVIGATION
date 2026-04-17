@@ -494,13 +494,13 @@ const initApp = () => {
 
     // ═══ SHOW/HIDE NAV ══════════════════════════════════
     function showNav() {
-        ['top-hud', 'bottom-right-container', 'bottom-left-container', 'map-options'].forEach(id => {
+        ['top-hud', 'bottom-right-container', 'bottom-left-container', 'map-options', 'compass-widget'].forEach(id => {
             const e = document.getElementById(id); if (e) { e.classList.remove('nav-hidden'); e.classList.add('nav-visible'); }
         });
     }
 
     function hideNav() {
-        ['top-hud', 'bottom-right-container', 'bottom-left-container', 'map-options', 'enable-audio-btn'].forEach(id => {
+        ['top-hud', 'bottom-right-container', 'bottom-left-container', 'map-options', 'enable-audio-btn', 'compass-widget'].forEach(id => {
             const e = document.getElementById(id); if (e) { e.classList.remove('nav-visible'); e.classList.add('nav-hidden'); }
         });
         const mw = document.getElementById('minimap-wrapper'); if (mw) { mw.classList.remove('nav-visible'); mw.classList.add('nav-hidden'); }

@@ -365,15 +365,55 @@ html,body{font-family:var(--font);color:var(--text);background:#000;height:100%;
 .sos-share-btn{background:linear-gradient(135deg,#1565c0,#0d47a1)!important;box-shadow:0 4px 14px rgba(21,101,192,.3)!important;margin-bottom:10px}
 .sos-close-btn{position:absolute;top:10px;right:10px}
 
+/* ─── COMPASS WIDGET ─────────────────────────────────── */
+#compass-widget {
+    position: fixed; top: 200px; left: 18px; z-index: 12;
+    display: flex; flex-direction: column; align-items: center; gap: 6px;
+    contain: layout style;
+}
+.compass-rose {
+    width: 44px; height: 44px; border-radius: 50%;
+    background: rgba(0,0,0,0.75);
+    border: 1.5px solid rgba(255,255,255,0.2);
+    display: flex; align-items: center; justify-content: center;
+    position: relative;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+    transition: transform 0.15s linear;
+}
+.compass-n {
+    position: absolute; top: 3px; left: 50%; transform: translateX(-50%);
+    font-size: 0.5rem; font-weight: 800; color: var(--accent);
+    text-shadow: 0 0 4px rgba(255,51,102,0.6);
+}
+.compass-needle {
+    width: 2px; height: 18px; position: relative;
+    background: linear-gradient(to bottom, var(--accent) 50%, rgba(255,255,255,0.3) 50%);
+    border-radius: 1px;
+}
+.compass-needle::after {
+    content: ''; position: absolute; top: -2px; left: 50%; transform: translateX(-50%);
+    width: 0; height: 0;
+    border-left: 4px solid transparent; border-right: 4px solid transparent;
+    border-bottom: 6px solid var(--accent);
+}
+.compass-dir {
+    font-size: 0.65rem; font-weight: 800; color: rgba(255,255,255,0.8);
+    letter-spacing: 1px; text-shadow: 0 2px 6px rgba(0,0,0,0.8);
+}
+
 /* ─── NIGHT / CAR MODE ───────────────────────────────── */
 body.night-mode .glass-panel{background:rgba(0,0,0,.9)}
+body.night-mode #ar-container { filter: brightness(0.85) saturate(1.1); }
+body.night-mode .hud-top-bar { background: linear-gradient(to bottom, rgba(0,0,0,0.94) 0%, rgba(0,0,0,0.55) 55%, transparent 100%); }
 body.car-mode #speed-value{font-size:2.8rem}
 body.car-mode #minimap-wrapper{width:100px;height:100px}
 body.car-mode .mega-arrow.arrow-straight{border-left-width:55px;border-right-width:55px;border-bottom-width:110px}
+body.car-mode .compass-rose { width: 38px; height: 38px; }
+body.car-mode #compass-widget { top: 180px; }
 
 /* Scrollbar */
 ::-webkit-scrollbar{width:3px}::-webkit-scrollbar-track{background:0 0}::-webkit-scrollbar-thumb{background:rgba(255,255,255,.1);border-radius:3px}
 
 @keyframes shake{0%,100%{transform:translateX(0)}20%{transform:translateX(-7px)}40%{transform:translateX(7px)}60%{transform:translateX(-3px)}80%{transform:translateX(3px)}}
 
-@media(max-width:360px){.modal h1{font-size:1.9rem}#speed-value{font-size:1.8rem}#minimap-wrapper{width:95px;height:95px}.mode-btn{padding:8px 4px}.mode-icon{font-size:1.1rem}.mode-label{font-size:.58rem}}
+@media(max-width:360px){.modal h1{font-size:1.9rem}#speed-value{font-size:1.8rem}#minimap-wrapper{width:95px;height:95px}.mode-btn{padding:8px 4px}.mode-icon{font-size:1.1rem}.mode-label{font-size:.58rem}#compass-widget{top:170px}.compass-rose{width:36px;height:36px}}

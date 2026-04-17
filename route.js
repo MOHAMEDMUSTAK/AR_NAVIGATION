@@ -193,6 +193,11 @@ window.RouteManager = {
         return { x: R * dLon * cosLat, z: -(R * dLat) };
     },
 
+    // ── Convenience: latLonToLocal uses the current route origin as anchor ──
+    latLonToLocal(lat, lon) {
+        return this.latLonToAnchor(lat, lon, this.originLat, this.originLon);
+    },
+
 
     // ── MINIMAP ──
     initMiniMap(lat, lon) {
@@ -634,7 +639,7 @@ window.RouteManager = {
         }
 
         // Step advance with velocity-scaled turn anticipation
-        let spdMs = window.GPS.speed || 0;
+        spdMs = window.GPS.speed || 0;
         const baseRadius = this.travelMode === 'walking' ? 5 : 8;
         const radius = Math.max(baseRadius, Math.min((window.GPS.currentAccuracy || 10), 20)) + (spdMs * 1.5);
         
