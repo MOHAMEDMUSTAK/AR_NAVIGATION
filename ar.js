@@ -1,49 +1,105 @@
-// ar.js — Production AR v6 — Ground Glow + Pulsing Chevrons + Compass
-// Dense holographic chevrons, glowing road surface, floating turn beacons
+// ar.js — AstraNav AR Engine v8 — Zero-Allocation InstancedMesh
+// Pre-allocated vectors, cached curve samples, throttled DOM, no GC pressure
 
 window.ARScene = {
     scene: null, camera: null, renderer: null,
-    pathGroup: new THREE.Group(),
-    chevronMat: null, edgeMat: null,
-    groundGlowMat: null,
-    xrActive: false, initialHeading: null,
+    chevronInstanced: null,
+    laneGlowMesh: null,
+    pathGroup: null,
+    beaconPool: [],
+    destPinObj: null,
+
+    anchorLat: null, anchorLon: null, anchorLocked: false,
+
+    routeCurve: null, curveLength: 0,
+
+    // Pre-cached curve samples (rebuilt only on buildPath)
+    cachedPoints: null,    // Float32Array [x,y,z, x,y,z, ...]
+    cachedTangents: null,  // Float32Array [x,y,z, x,y,z, ...]
+    cachedCount: 0,
+
+    flowOffset: 0,
     lastBuildTime: 0,
-    compassHeading: 0,
+    pathDirty: false,
+
+    xrActive: false, initialHeading: null,
+
+    // Config
+    MAX_CHEVRONS: 60,
+    CHEVRON_SPACING: 2.8,
+    BEACON_POOL_SIZE: 4,
+
+    // Pre-allocated objects (ZERO per-frame allocations)
+    _tempObj: null,
+    _tempVec: null,
+    _tempTarget: null,
+    _lastFov: 0,
+    _lastCompassUpdate: 0,
+
+    // Shared geometries & materials
+    chevronGeo: null, chevronMat: null,
+    laneGlowMat: null,
+    // Reusable lane glow buffer
+    _lanePositions: null,
+    _laneGeo: null,
 
     init() {
         const c = document.getElementById('ar-container');
         if (!c) return;
 
         this.scene = new THREE.Scene();
-        this.camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.1, 1000);
-        this.camera.userData.baseFov = 70;
+        this.camera = new THREE.PerspectiveCamera(68, window.innerWidth / window.innerHeight, 0.05, 2000);
+        this.camera.userData.baseFov = 68;
+        this._lastFov = 68;
 
-
-        this.renderer = new THREE.WebGLRenderer({ alpha: true, antialias: false });
+        this.renderer = new THREE.WebGLRenderer({
+            alpha: true,
+            antialias: false,
+            powerPreference: 'high-performance',
+            stencil: false,
+            depth: true
+        });
         this.renderer.setSize(window.innerWidth, window.innerHeight);
-        this.renderer.setPixelRatio(1.0);
+        this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
         this.renderer.xr.enabled = true;
         c.appendChild(this.renderer.domElement);
 
-        this.scene.add(new THREE.AmbientLight(0xffffff, 0.4));
-        const dirLight = new THREE.DirectionalLight(0xffffff, 0.9);
-        dirLight.position.set(0, 100, 0); // Top-down illumination for 3D chevrons
-        this.scene.add(dirLight);
+        this.scene.add(new THREE.AmbientLight(0xffffff, 0.6));
+        const sunLight = new THREE.DirectionalLight(0xffffff, 1.0);
+        sunLight.position.set(0, 50, 30);
+        this.scene.add(sunLight);
 
+        this.pathGroup = new THREE.Group();
+        this.pathGroup.matrixAutoUpdate = true;
         this.scene.add(this.pathGroup);
-        this.createChevronTexture();
 
-        // Compass camera for non-WebXR
-        window.GPS.onUpdate((t, v) => {
-            if (t === 'heading' && !this.xrActive) {
-                this.camera.rotation.y = THREE.MathUtils.degToRad(-v);
-                this.camera.rotation.order = "YXZ";
-            }
-        });
+        // Pre-allocate reusable objects
+        this._tempObj = new THREE.Object3D();
+        this._tempVec = new THREE.Vector3();
+        this._tempTarget = new THREE.Vector3();
+
+        this._buildSharedGeo();
+        this._createInstancedMeshes();
+        this._createBeaconPool();
+
+        // GPS heading → camera rotation (throttled)
+        if (window.GPS) {
+            window.GPS.onUpdate((t, v) => {
+                if (t === 'heading' && !this.xrActive) {
+                    this.camera.rotation.order = 'YXZ';
+                    let target = -v * (Math.PI / 180);
+                    let cur = this.camera.rotation.y;
+                    let d = target - cur;
+                    if (d > Math.PI) d -= Math.PI * 2;
+                    if (d < -Math.PI) d += Math.PI * 2;
+                    this.camera.rotation.y += d * 0.25;
+                }
+            });
+        }
 
         this.renderer.xr.addEventListener('sessionstart', () => {
             this.xrActive = true;
-            this.initialHeading = window.GPS.smoothHeading;
+            this.initialHeading = window.GPS?.smoothHeading || 0;
         });
         this.renderer.xr.addEventListener('sessionend', () => { this.xrActive = false; });
 
@@ -56,543 +112,458 @@ window.ARScene = {
         this.renderer.setAnimationLoop(this.animate.bind(this));
     },
 
-    // ════════════════════════════════════════════════════════
-    // CHEVRON TEXTURE — Matches reference: white V chevron
-    // with cyan glow, looks like road lane markings
-    // ════════════════════════════════════════════════════════
-    createChevronTexture() {
-        // True 3D Extruded Block Arrow based on User Reference Images
+    _buildSharedGeo() {
         const shape = new THREE.Shape();
-        shape.moveTo(-1.6, -2.2);
-        shape.lineTo(0, 2.2);
-        shape.lineTo(1.6, -2.2);
-        shape.lineTo(0, -0.8);
-        shape.lineTo(-1.6, -2.2);
+        shape.moveTo(-1.4, -2.0);
+        shape.lineTo(0, 2.0);
+        shape.lineTo(1.4, -2.0);
+        shape.lineTo(0, -0.7);
+        shape.lineTo(-1.4, -2.0);
 
-        const extrudeSettings = {
-            depth: 0.25,
-            bevelEnabled: true,
-            bevelSegments: 2,
-            steps: 1,
-            bevelSize: 0.08,
-            bevelThickness: 0.08
-        };
+        const ext = { depth: 0.22, bevelEnabled: true, bevelSegments: 1, steps: 1, bevelSize: 0.08, bevelThickness: 0.07 };
+        this.chevronGeo = new THREE.ExtrudeGeometry(shape, ext);
+        this.chevronGeo.rotateX(-Math.PI / 2);
 
-        this.sharedArrowGeo = new THREE.ExtrudeGeometry(shape, extrudeSettings);
-        this.sharedArrowGeo.rotateX(-Math.PI / 2); // Flat on ground, points forward (-Z)
-        
-        // Edge geometry for holographic wireframe aesthetic (Reference Image 2)
-        this.sharedEdgeGeo = new THREE.EdgesGeometry(this.sharedArrowGeo);
-
-        // Solid translucent glowing core
         this.chevronMat = new THREE.MeshPhongMaterial({
-            color: 0x00e5ff,
-            emissive: 0x0088ff,
-            emissiveIntensity: 0.6,
+            color: 0x00d4ff,
+            emissive: 0x0066cc,
+            emissiveIntensity: 0.7,
             transparent: true,
-            opacity: 0.75,
-            shininess: 120,
-            side: THREE.FrontSide
+            opacity: 0.82,
+            shininess: 100,
+            side: THREE.FrontSide,
+            depthWrite: false
         });
-        
-        // Glowing wireframe outline material
-        this.edgeMat = new THREE.LineBasicMaterial({
-            color: 0x00ffff,
-            linewidth: 2,
+
+        this.laneGlowMat = new THREE.MeshBasicMaterial({
+            color: 0x0088ff,
             transparent: true,
-            opacity: 0.95
+            opacity: 0.12,
+            side: THREE.DoubleSide,
+            depthWrite: false
         });
     },
 
-    // ════════════════════════════════════════════════════════
-    // BUILD PATH — Dense chevrons + bright green lane lines
-    // ════════════════════════════════════════════════════════
+    _createInstancedMeshes() {
+        this.chevronInstanced = new THREE.InstancedMesh(this.chevronGeo, this.chevronMat, this.MAX_CHEVRONS);
+        this.chevronInstanced.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+        this.chevronInstanced.frustumCulled = false;
+        this.chevronInstanced.count = 0;
+        this.pathGroup.add(this.chevronInstanced);
+
+        // Pre-allocate curve sample buffers
+        this.cachedPoints = new Float32Array(this.MAX_CHEVRONS * 3);
+        this.cachedTangents = new Float32Array(this.MAX_CHEVRONS * 3);
+    },
+
+    _createBeaconPool() {
+        for (let i = 0; i < this.BEACON_POOL_SIZE; i++) {
+            const beacon = this._makeBeaconObject();
+            beacon.visible = false;
+            this.scene.add(beacon);
+            this.beaconPool.push(beacon);
+        }
+        this.destPinObj = this._makeDestPin();
+        this.destPinObj.visible = false;
+        this.scene.add(this.destPinObj);
+    },
+
+    _makeBeaconObject() {
+        const g = new THREE.Group();
+        g.userData.isBeacon = true;
+        g.userData.lastMod = '';
+
+        const beamGeo = new THREE.CylinderGeometry(1.2, 0.4, 25, 8, 1, true);
+        beamGeo.translate(0, 12.5, 0);
+        const beamMat = new THREE.MeshBasicMaterial({ color: 0x00b8ff, transparent: true, opacity: 0.40, side: THREE.DoubleSide, depthWrite: false, blending: THREE.AdditiveBlending });
+        g.add(new THREE.Mesh(beamGeo, beamMat));
+
+        const coreGeo = new THREE.CylinderGeometry(0.3, 0.08, 25, 4, 1, true);
+        coreGeo.translate(0, 12.5, 0);
+        const coreMat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.75, side: THREE.DoubleSide, depthWrite: false, blending: THREE.AdditiveBlending });
+        g.add(new THREE.Mesh(coreGeo, coreMat));
+
+        const signGroup = new THREE.Group();
+        signGroup.position.set(0, 20, 0);
+        g.add(signGroup);
+
+        const bgMat = new THREE.MeshBasicMaterial({ color: 0x051525, transparent: true, opacity: 0.92, side: THREE.DoubleSide });
+        signGroup.add(new THREE.Mesh(new THREE.CircleGeometry(3.0, 24), bgMat));
+
+        const ringMat = new THREE.MeshBasicMaterial({ color: 0x00b8ff, transparent: true, opacity: 0.95, side: THREE.DoubleSide });
+        signGroup.add(new THREE.Mesh(new THREE.RingGeometry(3.0, 3.4, 24), ringMat));
+
+        const cv = document.createElement('canvas');
+        cv.width = 256; cv.height = 256;
+        const arrowTex = new THREE.CanvasTexture(cv);
+        arrowTex.needsUpdate = true;
+        const arrowMesh = new THREE.Mesh(
+            new THREE.PlaneGeometry(4.2, 4.2),
+            new THREE.MeshBasicMaterial({ map: arrowTex, transparent: true, depthWrite: false })
+        );
+        arrowMesh.position.z = 0.12;
+        signGroup.add(arrowMesh);
+
+        g.userData.arrowTex = arrowTex;
+        g.userData.arrowCanvas = cv;
+
+        return g;
+    },
+
+    _makeDestPin() {
+        const g = new THREE.Group();
+        g.userData.isDestPin = true;
+        const sphere = new THREE.Mesh(
+            new THREE.SphereGeometry(0.9, 8, 8),
+            new THREE.MeshBasicMaterial({ color: 0xff2255, transparent: true, opacity: 0.9 })
+        );
+        sphere.position.y = 6;
+        g.add(sphere);
+        g.add(new THREE.Mesh(
+            new THREE.CylinderGeometry(0.1, 0.1, 6, 4),
+            new THREE.MeshBasicMaterial({ color: 0xff2255 })
+        ));
+        g.children[1].position.y = 3;
+        const ring = new THREE.Mesh(
+            new THREE.RingGeometry(1.1, 1.9, 16),
+            new THREE.MeshBasicMaterial({ color: 0xff2255, transparent: true, opacity: 0.3, side: THREE.DoubleSide })
+        );
+        ring.rotation.x = -Math.PI / 2;
+        ring.position.y = 0.08;
+        g.add(ring);
+        return g;
+    },
+
+    // ═══════════════════════════════════════════════════════
+    // BUILD PATH — Pre-caches curve samples for zero-alloc animation
+    // ═══════════════════════════════════════════════════════
     buildPath() {
         if (!window.RouteManager || window.RouteManager.pathCoordinates.length < 2) return;
 
         const now = Date.now();
-        if (now - this.lastBuildTime < 180) return;
+        if (now - this.lastBuildTime < 200) {
+            this.pathDirty = true;
+            return;
+        }
         this.lastBuildTime = now;
+        this.pathDirty = false;
 
-        // Clear old
-        while (this.pathGroup.children.length) {
-            const ch = this.pathGroup.children[0];
-            if (ch.traverse) ch.traverse(o => {
-                if (o.geometry) o.geometry.dispose();
-                if (o.material && o.material !== this.chevronMat) o.material.dispose();
-            });
-            this.pathGroup.remove(ch);
+        if (!this.anchorLocked) {
+            if (!window.GPS?.displayLat) return;
+            this.anchorLat = window.GPS.displayLat;
+            this.anchorLon = window.GPS.displayLon;
+            this.anchorLocked = true;
         }
 
-        this.pathGroup.position.set(0, 0, 0);
-        this.pathGroup.rotation.set(0, 0, 0);
-
-        if (this.xrActive && this.initialHeading !== null) {
-            this.pathGroup.rotation.y = THREE.MathUtils.degToRad(this.initialHeading);
-        }
-
-        // Lock Local Origin to User for Absolute Zero Distortion Mapping
-        if (!window.GPS || !window.GPS.displayLat) return;
-        this.anchorLat = window.GPS.displayLat;
-        this.anchorLon = window.GPS.displayLon;
-
-        // Build path points from snapped index
         const pts = [];
-        const srCtx = window.RouteManager.lastSnapIndex || 0;
-        const curCoords = window.RouteManager.pathCoordinates;
-        let pathDist = 0;
-        const maxDist = 1500; // Expanded horizon mapping
+        const startIdx = window.RouteManager.lastSnapIndex || 0;
+        const coords = window.RouteManager.pathCoordinates;
+        let totalDist = 0;
+        const MAX_DIST = 1500;
 
-        for (let i = srCtx; i < curCoords.length; i++) {
-            const l = window.RouteManager.latLonToAnchor(curCoords[i].lat, curCoords[i].lon, this.anchorLat, this.anchorLon);
-            const v = new THREE.Vector3(l.x, 0.15, l.z); // Elevated to 15cm
+        for (let i = startIdx; i < coords.length; i++) {
+            const local = window.RouteManager.latLonToAnchor(coords[i].lat, coords[i].lon, this.anchorLat, this.anchorLon);
+            this._tempVec.set(local.x, 0.12, local.z);
             if (pts.length > 0) {
-                const d = pts[pts.length - 1].distanceTo(v);
-                if (d < 0.3) continue; // Skip too-close points
-                pathDist += d;
+                const last = pts[pts.length - 1];
+                const dx = this._tempVec.x - last.x, dz = this._tempVec.z - last.z;
+                const d = Math.sqrt(dx * dx + dz * dz);
+                if (d < 0.4) continue;
+                totalDist += d;
             }
-            pts.push(v);
-            if (pathDist > maxDist) break;
+            pts.push(new THREE.Vector3(this._tempVec.x, 0.12, this._tempVec.z));
+            if (totalDist > MAX_DIST) break;
         }
 
         if (pts.length < 2) return;
 
-        // Linear geometry prevents aggressive intersection "cutting"
-        const curve = new THREE.CurvePath();
-        for (let i = 0; i < pts.length - 1; i++) {
-            curve.add(new THREE.LineCurve3(pts[i], pts[i+1]));
-        }
-        const pathLen = curve.getLength();
+        this.routeCurve = new THREE.CatmullRomCurve3(pts, false, 'catmullrom', 0.5);
+        this.curveLength = this.routeCurve.getLength();
 
-        // ──────────────────────────────────────────────
-        // 1. DENSE WHITE CHEVRONS
-        // ──────────────────────────────────────────────
-        const chevronSpacing = 2.0; // Optimized spacing for massive scale
-        // Draw up to 250 arrows (500 meter visibility horizon)
-        const arrowCount = Math.min(250, Math.floor(pathLen / chevronSpacing));
+        // Pre-cache curve samples for zero-allocation animation
+        const spacing = this.CHEVRON_SPACING;
+        const count = Math.min(this.MAX_CHEVRONS, Math.floor(this.curveLength / spacing));
+        this.cachedCount = count;
 
-        const arrowGroup = new THREE.Group();
-        for (let i = 1; i < arrowCount; i++) {
-            const u = (i * chevronSpacing) / pathLen;
-            try {
-                const pt = curve.getPoint(u);
-                const tangent = curve.getTangent(u);
-                
-                // Composite 3D Arrow Group (Core + Glowing Edges)
-                const arrowObj = new THREE.Group();
-                arrowObj.position.copy(pt);
-                arrowObj.position.y = 0.15;
-                const target = pt.clone().add(tangent);
-                arrowObj.lookAt(target);
-                
-                // Add the solid core
-                const mesh = new THREE.Mesh(this.sharedArrowGeo, this.chevronMat);
-                arrowObj.add(mesh);
-                
-                // Add the glowing edges (Holographic effect)
-                const edges = new THREE.LineSegments(this.sharedEdgeGeo, this.edgeMat);
-                arrowObj.add(edges);
-                
-                arrowObj.userData.u = u;
-                arrowObj.userData.baseU = u;
-                arrowGroup.add(arrowObj);
-            } catch(e) {}
-        }
-        arrowGroup.userData.isChevronGroup = true;
-        arrowGroup.userData.curve = curve;
-        this.pathGroup.add(arrowGroup);
+        this._buildLaneGlow(pts);
+        this._updateBeacons();
 
-        // ──────────────────────────────────────────────
-        // 2. BRIGHT GREEN LANE BORDER LINES
-        //    Matching reference: solid neon green
-        // ──────────────────────────────────────────────
-        const leftPts = [], rightPts = [];
-        const laneWidth = 2.8; // Expanded width to fit 3D chevrons perfectly
-
-        for (let i = 0; i < pts.length - 1; i++) {
-            const A = pts[i];
-            const B = pts[i+1];
-            const dir = new THREE.Vector3().subVectors(B, A).normalize();
-            // True linear binormals to prevent splines from tearing on sharp corners
-            const binormal = new THREE.Vector3(dir.z, 0, -dir.x).normalize();
-            
-            const pL = new THREE.Vector3().copy(A).addScaledVector(binormal, laneWidth);
-            const pR = new THREE.Vector3().copy(A).addScaledVector(binormal, -laneWidth);
-            pL.y = 0.16; pR.y = 0.16; // Slight anti-z-fight bump over chevrons
-            leftPts.push(pL); rightPts.push(pR);
-            
-            if (i === pts.length - 2) {
-                const epL = new THREE.Vector3().copy(B).addScaledVector(binormal, laneWidth);
-                const epR = new THREE.Vector3().copy(B).addScaledVector(binormal, -laneWidth);
-                epL.y = 0.16; epR.y = 0.16;
-                leftPts.push(epL); rightPts.push(epR);
-            }
-        }
-
-        // Create thicker lane lines using tube-like line rendering
-        const greenMat = new THREE.LineBasicMaterial({
-            color: 0x00ff44,
-            transparent: true,
-            opacity: 0.85,
-            linewidth: 3
-        });
-        const lineL = new THREE.Line(new THREE.BufferGeometry().setFromPoints(leftPts), greenMat);
-        const lineR = new THREE.Line(new THREE.BufferGeometry().setFromPoints(rightPts), greenMat);
-        this.pathGroup.add(lineL);
-        this.pathGroup.add(lineR);
-
-        // Also add thin mesh strips for the lane lines (visible thickness on mobile)
-        this.addLaneStrip(leftPts, 0x00ff44, 0.35);
-        this.addLaneStrip(rightPts, 0x00ff44, 0.35);
-
-        // ──────────────────────────────────────────────
-        // 2b. GROUND GLOW STRIP — Translucent road highlight
-        //     Creates a premium Google-Maps-like blue road surface
-        // ──────────────────────────────────────────────
-        this.addLaneStrip(pts, 0x00b8ff, laneWidth * 2.0, 0.08, 0.18);
-
-        // ──────────────────────────────────────────────
-        // 3. FLOATING TURN INDICATORS (blue circle + arrow)
-        //    Matching reference: 3D floating signage
-        // ──────────────────────────────────────────────
-        const steps = window.RouteManager.steps;
-        const cur = window.RouteManager.currentStepIndex;
-
-        for (let i = cur; i < Math.min(cur + 4, steps.length); i++) {
-            const step = steps[i];
-            if (!step.maneuver?.location) continue;
-            const loc = step.maneuver.location;
-            const mod = step.maneuver.modifier || 'straight';
-            const lp = window.RouteManager.latLonToLocal(loc[1], loc[0]);
-            const d = Math.sqrt(lp.x ** 2 + lp.z ** 2);
-            if (d < 200 && d > 3) {
-                this.makeFloatingTurnSign(lp, mod, i === cur, step, d);
-            }
-        }
-
-        // Destination pin
         if (window.RouteManager.destLat) {
-            const dp = window.RouteManager.latLonToLocal(window.RouteManager.destLat, window.RouteManager.destLon);
-            if (Math.sqrt(dp.x ** 2 + dp.z ** 2) < 500) this.makeDestPin(dp);
+            const dp = window.RouteManager.latLonToAnchor(
+                window.RouteManager.destLat, window.RouteManager.destLon,
+                this.anchorLat, this.anchorLon
+            );
+            const dist = Math.sqrt(dp.x * dp.x + dp.z * dp.z);
+            if (dist < 800) {
+                this.destPinObj.position.set(dp.x, 0, dp.z);
+                this.destPinObj.visible = true;
+            } else {
+                this.destPinObj.visible = false;
+            }
         }
     },
 
-    // ── Lane Strip (thin mesh for visible line thickness) ──
-    addLaneStrip(points, color, width, yOffset, opacity) {
-        if (points.length < 2) return;
-        const stripY = yOffset || 0;
-        const stripOpacity = opacity || 0.7;
+    _buildLaneGlow(pts) {
+        if (this.laneGlowMesh) {
+            this.pathGroup.remove(this.laneGlowMesh);
+            this.laneGlowMesh.geometry.dispose();
+            this.laneGlowMesh = null;
+        }
+        const laneW = 3.0;
         const positions = [];
-        for (let i = 0; i < points.length - 1; i++) {
-            const p1 = points[i], p2 = points[i + 1];
+        for (let i = 0; i < pts.length - 1; i++) {
+            const p1 = pts[i], p2 = pts[i + 1];
             const dx = p2.x - p1.x, dz = p2.z - p1.z;
             const len = Math.sqrt(dx * dx + dz * dz);
-            if (len === 0) continue;
-            const nx = -dz / len * width * 0.5, nz = dx / len * width * 0.5;
-            const y1 = (p1.y || 0.16) + stripY, y2 = (p2.y || 0.16) + stripY;
+            if (len < 0.001) continue;
+            const nx = -dz / len * laneW * 0.5, nz = dx / len * laneW * 0.5;
+            const y = 0.05;
             positions.push(
-                p1.x + nx, y1, p1.z + nz,
-                p1.x - nx, y1, p1.z - nz,
-                p2.x + nx, y2, p2.z + nz,
-                p2.x - nx, y2, p2.z - nz,
-                p2.x + nx, y2, p2.z + nz,
-                p1.x - nx, y1, p1.z - nz
+                p1.x + nx, y, p1.z + nz,
+                p1.x - nx, y, p1.z - nz,
+                p2.x + nx, y, p2.z + nz,
+                p2.x - nx, y, p2.z - nz,
+                p2.x + nx, y, p2.z + nz,
+                p1.x - nx, y, p1.z - nz
             );
         }
         const geo = new THREE.BufferGeometry();
         geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-        geo.computeVertexNormals();
-        const mat = new THREE.MeshBasicMaterial({
-            color: color,
-            transparent: true,
-            opacity: stripOpacity,
-            side: THREE.DoubleSide,
-            depthWrite: false
-        });
-        const mesh = new THREE.Mesh(geo, mat);
-        this.pathGroup.add(mesh);
+        this.laneGlowMesh = new THREE.Mesh(geo, this.laneGlowMat);
+        this.pathGroup.add(this.laneGlowMesh);
     },
 
-    // ════════════════════════════════════════════════════════
-    // FLOATING TURN SIGN — Blue circle with direction arrow
-    // Matches reference: "Crescent St 50 ft" floating indicator
-    // ════════════════════════════════════════════════════════
-    makeFloatingTurnSign(pos, mod, isNext, step, distMeters) {
-        if (mod === 'straight' && !isNext) return;
+    _updateBeacons() {
+        const steps = window.RouteManager?.steps || [];
+        const cur = window.RouteManager?.currentStepIndex || 0;
 
-        const g = new THREE.Group();
-        const col = isNext ? 0x00b8ff : 0x8844ff;
+        this.beaconPool.forEach(b => { b.visible = false; });
 
-        // Epic Vertical Sci-Fi Beacon
-        const beamGeo = new THREE.CylinderGeometry(1.5, 0.5, 30, 16, 1, true);
-        beamGeo.translate(0, 15, 0);
-        const beamMat = new THREE.MeshBasicMaterial({
-            color: col, transparent: true, opacity: 0.45,
-            side: THREE.DoubleSide, depthWrite: false, blending: THREE.AdditiveBlending
-        });
-        g.add(new THREE.Mesh(beamGeo, beamMat));
-        
-        // Inner core beam
-        const coreGeo = new THREE.CylinderGeometry(0.4, 0.1, 30, 8, 1, true);
-        coreGeo.translate(0, 15, 0);
-        const coreMat = new THREE.MeshBasicMaterial({
-            color: 0xffffff, transparent: true, opacity: 0.8,
-            side: THREE.DoubleSide, depthWrite: false, blending: THREE.AdditiveBlending
-        });
-        g.add(new THREE.Mesh(coreGeo, coreMat));
+        let poolIdx = 0;
+        for (let i = cur; i < Math.min(cur + this.BEACON_POOL_SIZE, steps.length); i++) {
+            const step = steps[i];
+            if (!step?.maneuver?.location) continue;
+            const loc = step.maneuver.location;
+            const mod = step.maneuver.modifier || 'straight';
 
-        // Floating sign
-        const signGroup = new THREE.Group();
-        signGroup.position.set(0, 22, 0);
+            const lp = window.RouteManager.latLonToAnchor(loc[1], loc[0], this.anchorLat, this.anchorLon);
+            const dist = Math.sqrt(lp.x * lp.x + lp.z * lp.z);
 
-        // Dark circle backplate
-        const bgMat = new THREE.MeshBasicMaterial({
-            color: 0x051525, transparent: true, opacity: 0.9, side: THREE.DoubleSide
-        });
-        signGroup.add(new THREE.Mesh(new THREE.CircleGeometry(3.2, 32), bgMat));
+            if (dist < 3 || dist > 300) continue;
+            if (mod === 'straight' && i !== cur) continue;
 
-        // Blue glowing ring
-        const ringMat = new THREE.MeshBasicMaterial({
-            color: col, transparent: true, opacity: 0.95, side: THREE.DoubleSide
-        });
-        signGroup.add(new THREE.Mesh(new THREE.RingGeometry(3.2, 3.6, 32), ringMat));
+            const beacon = this.beaconPool[poolIdx++];
+            beacon.position.set(lp.x, 0, lp.z);
+            beacon.visible = true;
 
-        // Outer glow ring
-        const outerGlowMat = new THREE.MeshBasicMaterial({
-            color: col, transparent: true, opacity: 0.2, side: THREE.DoubleSide
-        });
-        signGroup.add(new THREE.Mesh(new THREE.RingGeometry(3.6, 4.2, 32), outerGlowMat));
+            if (beacon.userData.lastMod !== mod) {
+                beacon.userData.lastMod = mod;
+                const cv = beacon.userData.arrowCanvas;
+                const ctx = cv.getContext('2d');
+                ctx.clearRect(0, 0, 256, 256);
+                ctx.strokeStyle = '#ffffff';
+                ctx.fillStyle = '#ffffff';
+                ctx.lineWidth = 18;
+                ctx.lineCap = 'round';
+                ctx.lineJoin = 'round';
+                ctx.shadowColor = i === cur ? '#00b8ff' : '#8844ff';
+                ctx.shadowBlur = 16;
+                this._drawArrowOnCanvas(ctx, mod);
+                beacon.userData.arrowTex.needsUpdate = true;
 
-        // Direction arrow canvas
-        const cv = document.createElement('canvas');
-        cv.width = 256; cv.height = 256;
-        const ctx = cv.getContext('2d');
+                const col = i === cur ? 0x00b8ff : 0x9955ff;
+                beacon.children[0].material.color.setHex(col);
+                beacon.children[2].children[1].material.color.setHex(col);
+            }
 
-        // Draw arrow
-        ctx.strokeStyle = '#ffffff';
-        ctx.fillStyle = '#ffffff';
-        ctx.lineWidth = 16;
-        ctx.lineCap = 'round';
-        ctx.lineJoin = 'round';
-        ctx.shadowColor = isNext ? '#00b8ff' : '#8844ff';
-        ctx.shadowBlur = 12;
-
-        this.drawDirectionArrow(ctx, mod);
-
-        // Street name text
-        const streetName = step.name || '';
-        if (streetName && streetName.length < 20) {
-            ctx.shadowBlur = 0;
-            ctx.font = "bold 22px 'Arial', sans-serif";
-            ctx.fillStyle = 'rgba(255,255,255,0.9)';
-            ctx.textAlign = 'center';
-            ctx.fillText(streetName.substring(0, 15), 128, 235);
+            if (poolIdx >= this.BEACON_POOL_SIZE) break;
         }
-
-        const arrowTex = new THREE.CanvasTexture(cv);
-        const arrowMesh = new THREE.Mesh(
-            new THREE.PlaneGeometry(4.5, 4.5),
-            new THREE.MeshBasicMaterial({ map: arrowTex, transparent: true, depthWrite: false })
-        );
-        arrowMesh.position.z = 0.15;
-        signGroup.add(arrowMesh);
-
-        // Distance plate below the sign
-        if (isNext) {
-            const distCv = document.createElement('canvas');
-            distCv.width = 256;
-            distCv.height = 64;
-            const dCtx = distCv.getContext('2d');
-            dCtx.fillStyle = 'rgba(0,0,0,0.8)';
-            dCtx.roundRect(16, 4, 224, 52, 12);
-            dCtx.fill();
-            dCtx.font = "bold 32px 'Arial', sans-serif";
-            dCtx.fillStyle = '#00e5ff';
-            dCtx.textAlign = 'center';
-            const distText = distMeters >= 1000 ? `${(distMeters/1000).toFixed(1)} km` : `${Math.round(distMeters)}m`;
-            dCtx.fillText(distText, 128, 42);
-
-            const distTex = new THREE.CanvasTexture(distCv);
-            const distMesh = new THREE.Mesh(
-                new THREE.PlaneGeometry(4, 1),
-                new THREE.MeshBasicMaterial({ map: distTex, transparent: true, depthWrite: false })
-            );
-            distMesh.position.set(0, -4.2, 0.1);
-            signGroup.add(distMesh);
-        }
-
-        g.userData.isBillboardSign = true;
-        g.add(signGroup);
-        g.position.set(pos.x, 0, pos.z);
-        this.pathGroup.add(g);
     },
 
-    drawDirectionArrow(ctx, mod) {
+    _drawArrowOnCanvas(ctx, mod) {
         ctx.beginPath();
-        if (mod.includes('left')) {
-            if (mod.includes('sharp')) {
-                ctx.moveTo(180, 190); ctx.lineTo(180, 80); ctx.lineTo(65, 80); ctx.stroke();
-                ctx.beginPath(); ctx.moveTo(65, 40); ctx.lineTo(25, 80); ctx.lineTo(65, 120); ctx.fill();
-            } else if (mod.includes('slight')) {
-                ctx.moveTo(155, 200); ctx.lineTo(105, 110); ctx.lineTo(70, 55); ctx.stroke();
-                ctx.beginPath(); ctx.moveTo(38, 72); ctx.lineTo(70, 55); ctx.lineTo(88, 28); ctx.fill();
-            } else {
-                ctx.moveTo(155, 195); ctx.lineTo(155, 110); ctx.lineTo(65, 110); ctx.stroke();
-                ctx.beginPath(); ctx.moveTo(65, 70); ctx.lineTo(25, 110); ctx.lineTo(65, 150); ctx.fill();
-            }
+        if (mod.includes('sharp left')) {
+            ctx.moveTo(180, 195); ctx.lineTo(180, 75); ctx.lineTo(60, 75); ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(60, 35); ctx.lineTo(20, 75); ctx.lineTo(60, 115); ctx.fill();
+        } else if (mod.includes('slight left')) {
+            ctx.moveTo(155, 205); ctx.lineTo(100, 110); ctx.lineTo(65, 55); ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(33, 72); ctx.lineTo(65, 55); ctx.lineTo(83, 27); ctx.fill();
+        } else if (mod.includes('left')) {
+            ctx.moveTo(155, 200); ctx.lineTo(155, 105); ctx.lineTo(60, 105); ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(60, 65); ctx.lineTo(20, 105); ctx.lineTo(60, 145); ctx.fill();
+        } else if (mod.includes('sharp right')) {
+            ctx.moveTo(76, 195); ctx.lineTo(76, 75); ctx.lineTo(196, 75); ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(196, 35); ctx.lineTo(236, 75); ctx.lineTo(196, 115); ctx.fill();
+        } else if (mod.includes('slight right')) {
+            ctx.moveTo(101, 205); ctx.lineTo(156, 110); ctx.lineTo(191, 55); ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(223, 72); ctx.lineTo(191, 55); ctx.lineTo(173, 27); ctx.fill();
         } else if (mod.includes('right')) {
-            if (mod.includes('sharp')) {
-                ctx.moveTo(76, 190); ctx.lineTo(76, 80); ctx.lineTo(191, 80); ctx.stroke();
-                ctx.beginPath(); ctx.moveTo(191, 40); ctx.lineTo(231, 80); ctx.lineTo(191, 120); ctx.fill();
-            } else if (mod.includes('slight')) {
-                ctx.moveTo(101, 200); ctx.lineTo(151, 110); ctx.lineTo(186, 55); ctx.stroke();
-                ctx.beginPath(); ctx.moveTo(218, 72); ctx.lineTo(186, 55); ctx.lineTo(168, 28); ctx.fill();
-            } else {
-                ctx.moveTo(101, 195); ctx.lineTo(101, 110); ctx.lineTo(191, 110); ctx.stroke();
-                ctx.beginPath(); ctx.moveTo(191, 70); ctx.lineTo(231, 110); ctx.lineTo(191, 150); ctx.fill();
-            }
+            ctx.moveTo(101, 200); ctx.lineTo(101, 105); ctx.lineTo(196, 105); ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(196, 65); ctx.lineTo(236, 105); ctx.lineTo(196, 145); ctx.fill();
         } else if (mod.includes('uturn')) {
-            ctx.moveTo(168, 195); ctx.lineTo(168, 80);
-            ctx.arc(128, 80, 40, 0, Math.PI, true);
-            ctx.lineTo(88, 155); ctx.stroke();
-            ctx.beginPath(); ctx.moveTo(58, 145); ctx.lineTo(88, 195); ctx.lineTo(118, 145); ctx.fill();
+            ctx.moveTo(172, 200); ctx.lineTo(172, 80);
+            ctx.arc(128, 80, 44, 0, Math.PI, true);
+            ctx.lineTo(84, 155); ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(54, 145); ctx.lineTo(84, 195); ctx.lineTo(114, 145); ctx.fill();
         } else {
-            // Straight
-            ctx.moveTo(128, 210); ctx.lineTo(128, 70); ctx.stroke();
-            ctx.beginPath(); ctx.moveTo(88, 95); ctx.lineTo(128, 35); ctx.lineTo(168, 95); ctx.fill();
+            ctx.moveTo(128, 215); ctx.lineTo(128, 65); ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(85, 92); ctx.lineTo(128, 30); ctx.lineTo(171, 92); ctx.fill();
         }
     },
 
-    // ── DESTINATION PIN ──
-    makeDestPin(pos) {
-        const g = new THREE.Group();
-        const sphere = new THREE.Mesh(
-            new THREE.SphereGeometry(1.0, 12, 12),
-            new THREE.MeshBasicMaterial({ color: 0xff3366, transparent: true, opacity: 0.9 })
-        );
-        sphere.position.y = 7;
-        g.add(sphere);
-        g.add(new THREE.Mesh(
-            new THREE.CylinderGeometry(0.1, 0.1, 7, 6),
-            new THREE.MeshBasicMaterial({ color: 0xff3366 })
-        ));
-        g.children[1].position.y = 3.5;
-        const ring = new THREE.Mesh(
-            new THREE.RingGeometry(1.2, 2.0, 24),
-            new THREE.MeshBasicMaterial({ color: 0xff3366, transparent: true, opacity: 0.3, side: THREE.DoubleSide })
-        );
-        ring.rotation.x = -Math.PI / 2;
-        ring.position.y = 0.1;
-        g.add(ring);
-        g.position.set(pos.x, 0, pos.z);
-        g.userData.isDestPin = true;
-        this.pathGroup.add(g);
-    },
+    // ═══════════════════════════════════════════════════════
+    // ANIMATE — Zero per-frame allocations, throttled DOM
+    // ═══════════════════════════════════════════════════════
+    animate(time) {
+        const t = (time || Date.now()) * 0.001;
+        const spdMs = window.GPS?.speed || 0;
+        const now = Date.now();
 
-    // ════════════════════════════════════════════════════════
-    // ANIMATE LOOP — 60fps Rendering + Pulsing Effects
-    // ════════════════════════════════════════════════════════
-    animate() {
-        const t = Date.now() * 0.003;
-        const spdMs = window.GPS ? window.GPS.speed : 0;
+        // Process queued path rebuild
+        if (this.pathDirty && now - this.lastBuildTime >= 200) {
+            this.buildPath();
+        }
 
-        // Compass heading sync
-        if (window.GPS) {
-            this.compassHeading = window.GPS.smoothHeading || 0;
-            const compassEl = document.getElementById('compass-heading');
-            if (compassEl) compassEl.style.transform = `rotate(${-this.compassHeading}deg)`;
-            const compassValEl = document.getElementById('compass-value');
-            if (compassValEl) {
-                const dirs = ['N','NE','E','SE','S','SW','W','NW'];
-                compassValEl.innerText = dirs[Math.round(this.compassHeading / 45) % 8];
+        // ── Compass UI — Throttled to 10fps ──
+        if (now - this._lastCompassUpdate > 100) {
+            this._lastCompassUpdate = now;
+            if (window.GPS) {
+                const h = window.GPS.smoothHeading || 0;
+                const compassEl = document.getElementById('compass-heading');
+                if (compassEl) compassEl.style.transform = `rotate(${-h}deg)`;
+                const compassValEl = document.getElementById('compass-value');
+                if (compassValEl) {
+                    const dirs = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
+                    compassValEl.innerText = dirs[Math.round(h / 45) % 8];
+                }
             }
         }
 
-        // Pulsing chevron glow effect
+        // ── Material pulse ──
         if (this.chevronMat) {
-            const pulse = 0.5 + Math.sin(t * 1.8) * 0.15;
+            const pulse = 0.55 + Math.sin(t * 2.0) * 0.12;
             this.chevronMat.emissiveIntensity = pulse;
-            this.chevronMat.opacity = 0.65 + Math.sin(t * 2.2) * 0.1;
-        }
-        if (this.edgeMat) {
-            this.edgeMat.opacity = 0.8 + Math.sin(t * 2.5) * 0.15;
+            this.chevronMat.opacity = 0.70 + Math.sin(t * 2.5) * 0.08;
         }
 
-        // AR-GPS sync
-        if (this.xrActive && window.GPS?.displayLat) {
-            // Elimination of Spherical Projection Drift — Lock to anchored cell
-            const gpsL = window.RouteManager.latLonToAnchor(window.GPS.displayLat, window.GPS.displayLon, this.anchorLat || window.RouteManager.originLat, this.anchorLon || window.RouteManager.originLon);
-            const tX = this.camera.position.x - gpsL.x;
-            const tZ = this.camera.position.z - gpsL.z;
-            // Eliminate tracking lag: match AR camera coordinates immediately (0.8 instead of 0.15)
-            this.pathGroup.position.x += (tX - this.pathGroup.position.x) * 0.8;
-            this.pathGroup.position.z += (tZ - this.pathGroup.position.z) * 0.8;
+        // ── GPS-to-AR position sync ──
+        if (this.anchorLocked && window.GPS?.displayLat && window.RouteManager) {
+            const gpsLocal = window.RouteManager.latLonToAnchor(
+                window.GPS.displayLat, window.GPS.displayLon,
+                this.anchorLat, this.anchorLon
+            );
+            const tx = -gpsLocal.x;
+            const tz = -gpsLocal.z;
+            this.pathGroup.position.x += (tx - this.pathGroup.position.x) * 0.25;
+            this.pathGroup.position.z += (tz - this.pathGroup.position.z) * 0.25;
+        }
 
-            if (spdMs > 2.0) {
-                const euler = new THREE.Euler().setFromQuaternion(this.camera.quaternion, "YXZ");
-                // Correctly mapping clockwise initial heading into standard counter-clockwise space
-                const targetY = euler.y + THREE.MathUtils.degToRad(window.GPS.smoothHeading);
-                let dY = targetY - this.pathGroup.rotation.y;
-                while (dY > Math.PI) dY -= Math.PI * 2;
-                while (dY < -Math.PI) dY += Math.PI * 2;
-                this.pathGroup.rotation.y += dY * 0.08; // Smother rotation
-            }
-            
-            // DYNAMIC FOV: Zoom out at higher speeds to show more road
-            const targetFov = this.camera.userData.baseFov + Math.min(15, spdMs * 1.2);
-            if (Math.abs(this.camera.fov - targetFov) > 0.1) {
-                this.camera.fov += (targetFov - this.camera.fov) * 0.05;
+        // ── XR heading rotation ──
+        if (this.xrActive && window.GPS && spdMs > 2.0 && this.anchorLocked) {
+            const targetY = window.GPS.smoothHeading * (Math.PI / 180);
+            let dY = targetY - this.pathGroup.rotation.y;
+            if (dY > Math.PI) dY -= Math.PI * 2;
+            if (dY < -Math.PI) dY += Math.PI * 2;
+            this.pathGroup.rotation.y += dY * 0.06;
+        }
+
+        // ── Dynamic FOV — only update projection when FOV actually changes ──
+        if (this.camera) {
+            const targetFov = this.camera.userData.baseFov + Math.min(12, spdMs * 1.0);
+            if (Math.abs(this._lastFov - targetFov) > 0.3) {
+                this._lastFov += (targetFov - this._lastFov) * 0.06;
+                this.camera.fov = this._lastFov;
                 this.camera.updateProjectionMatrix();
             }
         }
 
+        // ── Chevron InstancedMesh — ZERO allocations ──
+        if (this.routeCurve && this.curveLength > 0) {
+            const flowSpeed = (1.8 + spdMs * 0.4) / this.curveLength;
+            this.flowOffset = (this.flowOffset + flowSpeed * (1 / 60)) % 1.0;
 
-        // Animate children
-        this.pathGroup.children.forEach(ch => {
-            // Chevron flow animation
-            if (ch.userData.isChevronGroup && ch.userData.curve) {
-                const cLen = ch.userData.curve.getLength() || 100;
-                // Real-time dynamic speed flow
-                const flowSpeed = (1.5 + spdMs * 0.5) / cLen;
-                const maxU = (ch.children.length * 2.0) / cLen;
+            const curLen = this.curveLength;
+            const spacing = this.CHEVRON_SPACING;
+            const count = Math.min(this.MAX_CHEVRONS, Math.floor(curLen / spacing));
+            this.chevronInstanced.count = count;
 
-                ch.children.forEach(arrowObj => {
-                    arrowObj.userData.u += flowSpeed;
-                    if (arrowObj.userData.u > maxU) arrowObj.userData.u -= maxU;
+            const dummy = this._tempObj;
+            for (let i = 0; i < count; i++) {
+                let u = (this.flowOffset + (i * spacing) / curLen) % 1.0;
+                if (u < 0) u += 1.0;
 
-                    const u = arrowObj.userData.u;
-                    try {
-                        const pt = ch.userData.curve.getPoint(u);
-                        const tan = ch.userData.curve.getTangent(u);
-                        arrowObj.position.copy(pt);
-                        arrowObj.position.y = 0.15;
-                        arrowObj.lookAt(pt.clone().add(tan));
-                    } catch(e) {}
+                try {
+                    // Reuse pre-allocated vectors
+                    this.routeCurve.getPoint(u, this._tempVec);
+                    this.routeCurve.getTangent(u, this._tempTarget);
 
-                    // Fade scale to gracefully enter/exit the camera view without clipping
-                    const edgeFade = Math.sin(u * Math.PI);
-                    let s = Math.max(0.01, Math.min(1.2, edgeFade * 2.0));
-                    if (u < 0.05) s *= (u / 0.05); // Pinch close to camera
-                    arrowObj.scale.set(s, s, s);
-                });
-            }
+                    dummy.position.set(this._tempVec.x, 0.14, this._tempVec.z);
 
-            // Billboard signs always face camera
-            if (ch.userData.isBillboardSign) {
-                ch.lookAt(this.camera.position.x, ch.position.y, this.camera.position.z);
-                // Gentle float
-                if (ch.children[1]) {
-                    ch.children[1].position.y = 14 + Math.sin(t * 1.2) * 0.3;
+                    // Orient along tangent — reuse _tempTarget
+                    this._tempTarget.set(
+                        this._tempVec.x + this._tempTarget.x,
+                        0.14,
+                        this._tempVec.z + this._tempTarget.z
+                    );
+                    dummy.lookAt(this._tempTarget);
+
+                    const distFactor = 1.0 - u * 0.55;
+                    const s = Math.max(0.3, distFactor * 1.15);
+                    dummy.scale.set(s, s, s);
+
+                    dummy.updateMatrix();
+                    this.chevronInstanced.setMatrixAt(i, dummy.matrix);
+                } catch (e) {
+                    dummy.scale.set(0.001, 0.001, 0.001);
+                    dummy.updateMatrix();
+                    this.chevronInstanced.setMatrixAt(i, dummy.matrix);
                 }
             }
+            this.chevronInstanced.instanceMatrix.needsUpdate = true;
+        }
 
-            // Destination pin
-            if (ch.userData.isDestPin) {
-                ch.rotation.y = t * 0.25;
-                if (ch.children[0]) ch.children[0].position.y = 7 + Math.sin(t * 1.5) * 0.25;
+        // ── Beacon billboard ──
+        for (let bi = 0; bi < this.beaconPool.length; bi++) {
+            const beacon = this.beaconPool[bi];
+            if (!beacon.visible) continue;
+            const signGroup = beacon.children[2];
+            if (signGroup) {
+                signGroup.lookAt(
+                    this.camera.position.x - this.pathGroup.position.x,
+                    signGroup.position.y + beacon.position.y,
+                    this.camera.position.z - this.pathGroup.position.z
+                );
+                signGroup.position.y = 19 + Math.sin(t * 1.3) * 0.35;
             }
-        });
+        }
+
+        // ── Destination pin ──
+        if (this.destPinObj.visible) {
+            this.destPinObj.rotation.y = t * 0.3;
+            if (this.destPinObj.children[0]) {
+                this.destPinObj.children[0].position.y = 6 + Math.sin(t * 1.6) * 0.22;
+            }
+        }
 
         this.renderer.render(this.scene, this.camera);
+    },
+
+    resetAnchor() {
+        this.anchorLocked = false;
+        this.anchorLat = null;
+        this.anchorLon = null;
+        this.routeCurve = null;
+        this.curveLength = 0;
+        this.flowOffset = 0;
+        this.cachedCount = 0;
+        this.chevronInstanced.count = 0;
+        this.beaconPool.forEach(b => { b.visible = false; });
+        this.destPinObj.visible = false;
+        if (this.laneGlowMesh) {
+            this.pathGroup.remove(this.laneGlowMesh);
+            this.laneGlowMesh.geometry.dispose();
+            this.laneGlowMesh = null;
+        }
+        this.pathGroup.position.set(0, 0, 0);
     }
 };

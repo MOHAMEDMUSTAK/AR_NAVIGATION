@@ -2,26 +2,46 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
     <title>AstraNav AR — Next-Gen Navigation</title>
-    <meta name="description" content="AstraNav AR: AI-powered navigation with obstacle detection, voice commands, weather alerts, trip stats, and real 3D AR navigation.">
-    <meta name="theme-color" content="#0a0f1e">
+    <meta name="description" content="AstraNav AR: Real-time AR navigation with Kalman GPS, 60fps chevron path, voice guidance, AI obstacle detection and live route recalculation.">
+    <meta name="theme-color" content="#080c1a">
+
+    <!-- PWA -->
     <link rel="manifest" href="manifest.json">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="apple-mobile-web-app-title" content="AstraNav">
     <link rel="apple-touch-icon" href="icon.svg">
     <link rel="icon" href="icon.svg" type="image/svg+xml">
-    <link rel="stylesheet" href="style.css">
+
+    <!-- Preconnect to all external APIs — speeds up first request significantly -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="preconnect" href="https://nominatim.openstreetmap.org">
+    <link rel="preconnect" href="https://router.project-osrm.org">
+    <link rel="preconnect" href="https://api.open-meteo.com">
+    <link rel="preconnect" href="https://basemaps.cartocdn.com">
+    <link rel="preconnect" href="https://cdnjs.cloudflare.com">
+    <link rel="preconnect" href="https://unpkg.com">
+
+    <!-- Fonts + CSS -->
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
 </head>
 <body>
 
-    <!-- Live Camera -->
+    <!-- ── Camera Feed (z-index 1) ── -->
     <video id="camera-feed" autoplay playsinline muted></video>
+
+    <!-- ── AI Detection Overlay (z-index 2) ── -->
     <canvas id="ai-overlay"></canvas>
+
+    <!-- ── Three.js AR Canvas (z-index 3) ── -->
     <div id="ar-container"></div>
+
+    <!-- ════════════════════════════════════════ HUD OVERLAYS ════ -->
 
     <!-- Obstacle Warning -->
     <div id="obstacle-warning" class="obstacle-hidden">
@@ -48,7 +68,7 @@
         <span id="weather-temp">--°C</span>
     </div>
 
-    <!-- Compass Heading Indicator -->
+    <!-- Compass -->
     <div id="compass-widget" class="nav-hidden">
         <div id="compass-heading" class="compass-rose">
             <span class="compass-n">N</span>
@@ -57,36 +77,36 @@
         <span id="compass-value" class="compass-dir">N</span>
     </div>
 
-    <!-- TOP HUD -->
+    <!-- ════ TOP HUD ════════════════════════════════════════════ -->
     <div id="top-hud" class="nav-hidden">
         <div class="hud-top-bar">
+            <!-- Turn Card Left -->
             <div class="hud-left">
-                <div id="turn-arrow-2d" class="hud-arrow-icon arrow-straight"></div>
+                <div id="turn-arrow-2d" class="hud-arrow-icon"><svg class="nav-arrow" viewBox="0 0 24 24"><path d="M12 2L4 14h5.5v8h5v-8H20z" fill="#fff"/></svg></div>
                 <div class="turn-info">
                     <span id="road-name" class="road-name-text">--</span>
                     <span id="turn-dist" class="turn-dist-text">--</span>
                 </div>
             </div>
+            <!-- Right Controls -->
             <div class="hud-right">
                 <div class="hud-buttons-ref">
                     <span class="hud-ref-icon" title="Lane Assist">⏫</span>
-                    <span class="hud-ref-icon icon-hazard" title="Hazard">◳!</span>
+                    <span class="hud-ref-icon icon-hazard" title="Hazard">⚠</span>
                     <span class="hud-ref-icon" title="Help">❓</span>
                     <span class="hud-ref-icon" title="Favorite">⭐</span>
-                    <span class="hud-ref-icon" title="Menu">⋮⋮⋮</span>
                 </div>
                 <div class="hud-time-battery">
                     <span id="top-time">--:--</span>
                     <div class="battery-wrapper">
-                        <div class="battery-body">
-                            <div id="battery-level-fill"></div>
-                        </div>
+                        <div class="battery-body"><div id="battery-level-fill"></div></div>
                         <div class="battery-tip"></div>
                     </div>
                 </div>
             </div>
         </div>
-        <!-- Destination Info Bar -->
+
+        <!-- Destination / ETA bar -->
         <div class="dest-info-bar">
             <span id="dest-name-hud" class="dest-name">--</span>
             <span class="dest-separator">·</span>
@@ -94,18 +114,21 @@
             <span class="dest-separator">·</span>
             <span id="remaining-eta" class="dest-eta">--</span>
         </div>
-        <!-- Central Floating Turn Badge -->
+
+        <!-- Central floating turn badge -->
         <div class="top-center-badge">
             <div class="badge-ring">
-                <div id="badge-arrow" class="mega-arrow arrow-straight"></div>
+                <div id="badge-arrow" class="mega-arrow"><svg class="nav-arrow" viewBox="0 0 24 24"><path d="M12 2L4 14h5.5v8h5v-8H20z" fill="#fff"/></svg></div>
             </div>
         </div>
+
+        <!-- Lane guidance (hidden by default) -->
         <div id="lane-guidance" class="lane-hidden"></div>
     </div>
 
-    <!-- Bottom-Left: Audio + Speed + Speed Limit -->
+    <!-- ════ BOTTOM LEFT: Speed + Audio ════════════════════════ -->
     <div id="bottom-left-container" class="nav-hidden">
-        <button id="enable-audio-btn" class="audio-floating-btn">🔊</button>
+        <button id="enable-audio-btn" class="audio-floating-btn" title="Toggle Voice">🔊</button>
         <div id="speed-display">
             <span id="speed-value">0</span>
             <span class="speed-unit">km/h</span>
@@ -115,7 +138,7 @@
         </div>
     </div>
 
-    <!-- Bottom-Right: Minimap + ETA -->
+    <!-- ════ BOTTOM RIGHT: Minimap + ETA pill ══════════════════ -->
     <div id="bottom-right-container" class="nav-hidden">
         <div id="minimap-wrapper">
             <div class="minimap-dashed-border"></div>
@@ -128,7 +151,16 @@
         </div>
     </div>
 
-    <!-- Fullscreen Map -->
+    <!-- ════ RIGHT OPTION BUTTONS ═══════════════════════════════ -->
+    <div id="map-options" class="nav-hidden">
+        <button id="toggle-voice-btn" class="opt-btn" title="Voice">🔊</button>
+        <button id="recenter-btn"     class="opt-btn" title="Recenter">📍</button>
+        <button id="share-btn"        class="opt-btn" title="Share">📤</button>
+        <button id="park-btn"         class="opt-btn" title="Park Here">🅿️</button>
+        <button id="sos-btn"          class="opt-btn opt-sos" title="Emergency">🆘</button>
+    </div>
+
+    <!-- ════ FULLSCREEN MAP ═════════════════════════════════════ -->
     <div id="fullscreen-map-overlay" class="fullmap-closed">
         <div id="fullscreen-map-header">
             <h2>Route Overview</h2>
@@ -137,49 +169,28 @@
         <div id="fullscreen-map"></div>
     </div>
 
-    <!-- Route Alternatives -->
+    <!-- ════ ROUTE ALTERNATIVES ════════════════════════════════ -->
     <div id="route-alternatives-panel" class="alt-hidden"></div>
 
-    <!-- Quick Options (Right) -->
-    <div id="map-options" class="nav-hidden">
-        <button id="toggle-voice-btn" class="opt-btn" title="Voice">🔊</button>
-        <button id="recenter-btn" class="opt-btn" title="Recenter">📍</button>
-        <button id="share-btn" class="opt-btn" title="Share">📤</button>
-        <button id="park-btn" class="opt-btn" title="Park Here">🅿️</button>
-        <button id="sos-btn" class="opt-btn opt-sos" title="Emergency">🆘</button>
-    </div>
-
-    <!-- Trip Dashboard -->
+    <!-- ════ TRIP DASHBOARD ═════════════════════════════════════ -->
     <div id="trip-dashboard" class="trip-hidden glass-panel">
         <div class="trip-handle"></div>
         <h3>Trip Stats</h3>
         <div class="trip-grid">
-            <div class="trip-stat">
-                <span class="trip-val" id="trip-distance">0</span>
-                <span class="trip-label">km traveled</span>
-            </div>
-            <div class="trip-stat">
-                <span class="trip-val" id="trip-duration">0:00</span>
-                <span class="trip-label">duration</span>
-            </div>
-            <div class="trip-stat">
-                <span class="trip-val" id="trip-avg-speed">0</span>
-                <span class="trip-label">avg km/h</span>
-            </div>
-            <div class="trip-stat">
-                <span class="trip-val" id="trip-max-speed">0</span>
-                <span class="trip-label">max km/h</span>
-            </div>
+            <div class="trip-stat"><span class="trip-val" id="trip-distance">0</span><span class="trip-label">km traveled</span></div>
+            <div class="trip-stat"><span class="trip-val" id="trip-duration">0:00</span><span class="trip-label">duration</span></div>
+            <div class="trip-stat"><span class="trip-val" id="trip-avg-speed">0</span><span class="trip-label">avg km/h</span></div>
+            <div class="trip-stat"><span class="trip-val" id="trip-max-speed">0</span><span class="trip-label">max km/h</span></div>
         </div>
         <button id="trip-close-btn" class="glow-btn trip-close">Close</button>
     </div>
 
-    <!-- Parking Saved Toast -->
+    <!-- ════ TOAST ══════════════════════════════════════════════ -->
     <div id="park-toast" class="toast toast-hidden">📍 Parking spot saved!</div>
 
-    <!-- SOS Modal -->
+    <!-- ════ SOS MODAL ══════════════════════════════════════════ -->
     <div id="sos-modal" class="sos-hidden">
-        <div class="sos-inner glass-panel">
+        <div class="sos-inner glass-panel" style="position:relative;">
             <h2>🆘 Emergency</h2>
             <p id="sos-location">Location: loading...</p>
             <a id="sos-call" href="tel:112" class="glow-btn sos-call-btn">📞 Call Emergency</a>
@@ -188,12 +199,13 @@
         </div>
     </div>
 
-    <!-- Input Screen -->
+    <!-- ════ INPUT SCREEN ═══════════════════════════════════════ -->
     <div id="input-screen">
         <div id="input-modal" class="modal glass-panel">
             <div class="modal-glow"></div>
             <h1>AstraNav AR</h1>
-            <p class="modal-subtitle">AI-Powered • AR Navigation • Real-Time</p>
+            <p class="modal-subtitle">Real-Time AR • AI Detection • Voice Guidance</p>
+
             <div class="input-group">
                 <div class="search-wrapper">
                     <span class="search-icon">🔍</span>
@@ -202,38 +214,39 @@
                 </div>
                 <div id="search-suggestions" class="suggestions-hidden"></div>
             </div>
-            
-            <!-- Travel Mode Selector -->
+
+            <!-- Travel Mode -->
             <div class="travel-mode-selector">
-                <button class="mode-btn mode-active" data-mode="driving" title="Driving">
-                    <span class="mode-icon">🚗</span>
-                    <span class="mode-label">Drive</span>
+                <button class="mode-btn mode-active" data-mode="driving">
+                    <span class="mode-icon">🚗</span><span class="mode-label">Drive</span>
                 </button>
-                <button class="mode-btn" data-mode="walking" title="Walking">
-                    <span class="mode-icon">🚶</span>
-                    <span class="mode-label">Walk</span>
+                <button class="mode-btn" data-mode="walking">
+                    <span class="mode-icon">🚶</span><span class="mode-label">Walk</span>
                 </button>
-                <button class="mode-btn" data-mode="cycling" title="Cycling">
-                    <span class="mode-icon">🚲</span>
-                    <span class="mode-label">Cycle</span>
+                <button class="mode-btn" data-mode="cycling">
+                    <span class="mode-icon">🚲</span><span class="mode-label">Cycle</span>
                 </button>
             </div>
-            
+
             <div id="recent-destinations" class="recent-hidden">
-                <p class="recent-label">Recent</p>
+                <p class="recent-label">📌 RECENT</p>
                 <div id="recent-list"></div>
             </div>
-            <!-- Parked Car Shortcut -->
+
             <div id="parked-car" class="parked-hidden">
                 <button id="go-to-car-btn" class="glow-btn parked-btn">🚗 Navigate to My Car</button>
             </div>
+
             <button id="start-btn" class="glow-btn start-btn">
                 <span class="btn-text">Start Navigation</span>
-                <span class="btn-loader btn-loader-hidden"><span class="spinner"></span> Initializing...</span>
+                <span class="btn-loader btn-loader-hidden">
+                    <span class="spinner"></span> Initializing...
+                </span>
             </button>
+
             <div class="feature-pills">
                 <span class="pill">🧠 AI Detection</span>
-                <span class="pill">🎤 Voice Control</span>
+                <span class="pill">🎤 Voice Guidance</span>
                 <span class="pill">🌦️ Weather</span>
                 <span class="pill">📊 Trip Stats</span>
             </div>
@@ -241,24 +254,24 @@
         </div>
     </div>
 
-    <!-- Deferred Three.js loading -->
+    <!-- ════ SCRIPTS — Load order matters ══════════════════════ -->
     <script>
-        // Sequential loader — each script waits for the previous one
+        // Sequential deferred loader — each lib waits for previous
         function loadScript(src) {
             return new Promise((resolve, reject) => {
                 const s = document.createElement('script');
                 s.src = src;
                 s.onload = resolve;
-                s.onerror = reject;
+                s.onerror = () => { console.warn('Script load failed:', src); resolve(); }; // Soft fail
                 document.body.appendChild(s);
             });
         }
-        
-        // Load dependencies first, then app scripts in strict order
-        (async function() {
+
+        (async function () {
+            // Core 3D + map — must load first
             await loadScript('https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js');
             await loadScript('https://unpkg.com/leaflet@1.9.4/dist/leaflet.js');
-            // App scripts MUST load in this order: gps → route → ar → app
+            // App modules in dependency order
             await loadScript('gps.js');
             await loadScript('route.js');
             await loadScript('ar.js');
@@ -266,15 +279,11 @@
         })();
     </script>
 
+    <!-- Service Worker -->
     <script>
         if ('serviceWorker' in navigator) {
             window.addEventListener('load', () => {
-                navigator.serviceWorker.register('service-worker.js')
-                    .then(registration => {
-                        console.log('ServiceWorker registration successful with scope: ', registration.scope);
-                    }, err => {
-                        console.log('ServiceWorker registration failed: ', err);
-                    });
+                navigator.serviceWorker.register('service-worker.js').catch(() => {});
             });
         }
     </script>
