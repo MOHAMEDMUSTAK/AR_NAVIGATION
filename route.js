@@ -374,7 +374,7 @@ window.RouteManager = {
     snapToRoute(lat, lon) {
         // Look-ahead compensation for GPS hardware latency
         const spd = window.GPS.speed || 0;
-        const lookAheadM = spd * 0.7;
+        const lookAheadM = spd * 0.35;
         let pLat = lat, pLon = lon;
         if (lookAheadM > 0) {
             const R = 6378137;
@@ -421,6 +421,15 @@ window.RouteManager = {
                 if (cost < minCost) { minCost = cost; bestIdx = i; bestSnap = proj; }
             }
         }
+
+        if (!this.snapHistory) this.snapHistory = [];
+        this.snapHistory.push(bestSnap);
+        if (this.snapHistory.length > 3) this.snapHistory.shift();
+
+        let avgLat = 0, avgLon = 0;
+        for (let s of this.snapHistory) { avgLat += s.lat; avgLon += s.lon; }
+        bestSnap.lat = avgLat / this.snapHistory.length;
+        bestSnap.lon = avgLon / this.snapHistory.length;
 
         this.lastSnapIndex = bestIdx;
         return {
@@ -545,21 +554,51 @@ window.RouteManager = {
             return;
         }
 
-        // ══ OFF-ROUTE DETECTION (Time-based — 3 continuous seconds) ══
+        // ══ OFF-ROUTE DETECTION (Time-based & Heading-based) ══
         const rerouteThreshold = this.travelMode === 'walking' ? 18 : this.travelMode === 'cycling' ? 22 : 30;
         const spdMs = window.GPS.speed || 0;
 
         let isWrongWay = false;
-        if (snap.index < this.pathCoordinates.length - 1 && spdMs > 3.5) {
+        if (snap.index < this.pathCoordinates.length - 1 && spdMs > 1.5) {
             const p1 = this.pathCoordinates[snap.index];
             const p2 = this.pathCoordinates[snap.index + 1];
             const routeBearing = window.GPS.calcBearing(p1.lat, p1.lon, p2.lat, p2.lon);
             let diff = Math.abs(window.GPS.smoothHeading - routeBearing);
             if (diff > 180) diff = 360 - diff;
-            isWrongWay = diff > 115;
+            
+            if (!this.headingDeviations) this.headingDeviations = [];
+            this.headingDeviations.push(diff);
+            if (this.headingDeviations.length > 5) this.headingDeviations.shift();
+            
+            const avgDiff = this.headingDeviations.reduce((a,b)=>a+b,0) / this.headingDeviations.length;
+            isWrongWay = avgDiff > 90;
+        } else {
+            this.headingDeviations = [];
         }
 
-        const isOffRoute = snap.distance > rerouteThreshold || (isWrongWay && snap.distance > 12);
+        const isOffRoute = snap.distance > rerouteThreshold || (isWrongWay && snap.distance > 8);
+
+        const wwAlert = document.getElementById('wrong-way-alert');
+        if (isWrongWay && spdMs > 1.5) {
+            if (wwAlert && wwAlert.classList.contains('wrong-way-hidden')) {
+                wwAlert.classList.remove('wrong-way-hidden');
+            }
+            // Add direction arrow to banner based on relative bearing
+            const wwArrow = document.getElementById('wrong-way-arrow');
+            if (wwArrow) {
+                const p1 = this.pathCoordinates[snap.index];
+                const p2 = this.pathCoordinates[snap.index + 1];
+                const routeBearing = window.GPS.calcBearing(p1.lat, p1.lon, p2.lat, p2.lon);
+                let rel = routeBearing - window.GPS.smoothHeading;
+                if (rel < -180) rel += 360;
+                if (rel > 180) rel -= 360;
+                wwArrow.style.transform = `rotate(${rel}deg)`;
+            }
+        } else {
+            if (wwAlert && !wwAlert.classList.contains('wrong-way-hidden')) {
+                wwAlert.classList.add('wrong-way-hidden');
+            }
+        }
 
         if (isOffRoute) {
             if (!this.offRouteStartTime) this.offRouteStartTime = Date.now();
@@ -569,7 +608,18 @@ window.RouteManager = {
             const warnTime = this.travelMode === 'walking' ? 2500 : 1200;
             if (offDuration > warnTime && !this.offRouteWarned) {
                 this.offRouteWarned = true;
-                if (this.audioEnabled) this.speak('Return to the route.');
+                if (isWrongWay) {
+                    const p1 = this.pathCoordinates[snap.index];
+                    const p2 = this.pathCoordinates[snap.index + 1];
+                    const routeBearing = window.GPS.calcBearing(p1.lat, p1.lon, p2.lat, p2.lon);
+                    let rel = routeBearing - window.GPS.smoothHeading;
+                    if (rel < -180) rel += 360;
+                    if (rel > 180) rel -= 360;
+                    const dirStr = rel > 0 ? "right" : "left";
+                    if (this.audioEnabled) this.speak(`Wrong way. Turn ${dirStr} to return to the route.`);
+                } else {
+                    if (this.audioEnabled) this.speak('Return to the route.');
+                }
             }
 
             // Reroute after 3 seconds of continuous off-route
@@ -687,15 +737,20 @@ window.RouteManager = {
             }
         }
 
-        // Rebuild AR arrows every 50m traveled
+        // Rebuild AR arrows based on distance or sharp heading changes
         if (!this.lastArBuildLat) {
             this.lastArBuildLat = lat; this.lastArBuildLon = lon;
+            this.lastArBuildHeading = window.GPS.smoothHeading;
         } else {
-            const rebuildDist = spdMs > 10 ? 40 : spdMs > 3 ? 25 : 15;
+            const rebuildDist = spdMs > 10 ? 40 : spdMs > 3 ? 20 : 10;
             const d = this.haversine(lat, lon, this.lastArBuildLat, this.lastArBuildLon);
-            if (d > rebuildDist && window.ARScene?.buildPath) {
+            let hDiff = Math.abs(window.GPS.smoothHeading - (this.lastArBuildHeading || 0));
+            if (hDiff > 180) hDiff = 360 - hDiff;
+            
+            if ((d > rebuildDist || hDiff > 30) && window.ARScene?.buildPath) {
                 window.ARScene.buildPath();
                 this.lastArBuildLat = lat; this.lastArBuildLon = lon;
+                this.lastArBuildHeading = window.GPS.smoothHeading;
             }
         }
     },

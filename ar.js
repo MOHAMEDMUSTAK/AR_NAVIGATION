@@ -114,33 +114,48 @@ window.ARScene = {
 
     _buildSharedGeo() {
         const shape = new THREE.Shape();
-        shape.moveTo(-1.4, -2.0);
-        shape.lineTo(0, 2.0);
-        shape.lineTo(1.4, -2.0);
-        shape.lineTo(0, -0.7);
-        shape.lineTo(-1.4, -2.0);
+        // Wider V-shape (width 3.6m, depth 5.0m)
+        shape.moveTo(-1.8, -2.5);
+        shape.lineTo(0, 2.5);
+        shape.lineTo(1.8, -2.5);
+        shape.lineTo(0, -1.0);
+        shape.lineTo(-1.8, -2.5);
 
-        const ext = { depth: 0.22, bevelEnabled: true, bevelSegments: 1, steps: 1, bevelSize: 0.08, bevelThickness: 0.07 };
+        const ext = { depth: 0.35, bevelEnabled: true, bevelSegments: 2, steps: 1, bevelSize: 0.1, bevelThickness: 0.1 };
         this.chevronGeo = new THREE.ExtrudeGeometry(shape, ext);
         this.chevronGeo.rotateX(-Math.PI / 2);
 
         this.chevronMat = new THREE.MeshPhongMaterial({
             color: 0x00d4ff,
-            emissive: 0x0066cc,
-            emissiveIntensity: 0.7,
+            emissive: 0x00aaff,
+            emissiveIntensity: 0.9,
             transparent: true,
-            opacity: 0.82,
-            shininess: 100,
+            opacity: 0.88,
+            shininess: 120,
             side: THREE.FrontSide,
             depthWrite: false
         });
 
-        this.laneGlowMat = new THREE.MeshBasicMaterial({
-            color: 0x0088ff,
+        // Add a dark outline geo for contrast
+        const outlineExt = { depth: 0.30, bevelEnabled: true, bevelSegments: 1, steps: 1, bevelSize: 0.25, bevelThickness: 0.15 };
+        this.chevronOutlineGeo = new THREE.ExtrudeGeometry(shape, outlineExt);
+        this.chevronOutlineGeo.rotateX(-Math.PI / 2);
+        
+        this.chevronOutlineMat = new THREE.MeshBasicMaterial({
+            color: 0x000000,
             transparent: true,
-            opacity: 0.12,
-            side: THREE.DoubleSide,
+            opacity: 0.4,
+            side: THREE.BackSide,
             depthWrite: false
+        });
+
+        this.laneGlowMat = new THREE.MeshBasicMaterial({
+            color: 0x00d4ff,
+            transparent: true,
+            opacity: 0.22,
+            side: THREE.DoubleSide,
+            depthWrite: false,
+            blending: THREE.AdditiveBlending
         });
     },
 
@@ -149,6 +164,13 @@ window.ARScene = {
         this.chevronInstanced.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
         this.chevronInstanced.frustumCulled = false;
         this.chevronInstanced.count = 0;
+        
+        this.chevronOutlineInstanced = new THREE.InstancedMesh(this.chevronOutlineGeo, this.chevronOutlineMat, this.MAX_CHEVRONS);
+        this.chevronOutlineInstanced.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+        this.chevronOutlineInstanced.frustumCulled = false;
+        this.chevronOutlineInstanced.count = 0;
+
+        this.pathGroup.add(this.chevronOutlineInstanced);
         this.pathGroup.add(this.chevronInstanced);
 
         // Pre-allocate curve sample buffers
@@ -253,6 +275,16 @@ window.ARScene = {
             this.anchorLat = window.GPS.displayLat;
             this.anchorLon = window.GPS.displayLon;
             this.anchorLocked = true;
+        } else {
+            // Re-anchor every ~200m to prevent floating point precision loss
+            if (window.GPS?.displayLat) {
+                const dist = window.RouteManager.haversine(window.GPS.displayLat, window.GPS.displayLon, this.anchorLat, this.anchorLon);
+                if (dist > 200) {
+                    this.anchorLat = window.GPS.displayLat;
+                    this.anchorLon = window.GPS.displayLon;
+                    this.pathGroup.position.set(0, 0, 0); // reset visual offset
+                }
+            }
         }
 
         const pts = [];
@@ -277,7 +309,7 @@ window.ARScene = {
 
         if (pts.length < 2) return;
 
-        this.routeCurve = new THREE.CatmullRomCurve3(pts, false, 'catmullrom', 0.5);
+        this.routeCurve = new THREE.CatmullRomCurve3(pts, false, 'catmullrom', 0.0);
         this.curveLength = this.routeCurve.getLength();
 
         // Pre-cache curve samples for zero-allocation animation
@@ -441,9 +473,9 @@ window.ARScene = {
 
         // ── Material pulse ──
         if (this.chevronMat) {
-            const pulse = 0.55 + Math.sin(t * 2.0) * 0.12;
+            const pulse = 0.85 + Math.sin(t * 3.0) * 0.15;
             this.chevronMat.emissiveIntensity = pulse;
-            this.chevronMat.opacity = 0.70 + Math.sin(t * 2.5) * 0.08;
+            this.chevronMat.opacity = 0.82 + Math.sin(t * 2.5) * 0.10;
         }
 
         // ── GPS-to-AR position sync ──
@@ -454,8 +486,8 @@ window.ARScene = {
             );
             const tx = -gpsLocal.x;
             const tz = -gpsLocal.z;
-            this.pathGroup.position.x += (tx - this.pathGroup.position.x) * 0.25;
-            this.pathGroup.position.z += (tz - this.pathGroup.position.z) * 0.25;
+            this.pathGroup.position.x += (tx - this.pathGroup.position.x) * 0.55;
+            this.pathGroup.position.z += (tz - this.pathGroup.position.z) * 0.55;
         }
 
         // ── XR heading rotation ──
@@ -486,6 +518,7 @@ window.ARScene = {
             const spacing = this.CHEVRON_SPACING;
             const count = Math.min(this.MAX_CHEVRONS, Math.floor(curLen / spacing));
             this.chevronInstanced.count = count;
+            this.chevronOutlineInstanced.count = count;
 
             const dummy = this._tempObj;
             for (let i = 0; i < count; i++) {
@@ -513,13 +546,20 @@ window.ARScene = {
 
                     dummy.updateMatrix();
                     this.chevronInstanced.setMatrixAt(i, dummy.matrix);
+                    
+                    // Slightly lower for outline to prevent Z-fighting
+                    dummy.position.y -= 0.03;
+                    dummy.updateMatrix();
+                    this.chevronOutlineInstanced.setMatrixAt(i, dummy.matrix);
                 } catch (e) {
                     dummy.scale.set(0.001, 0.001, 0.001);
                     dummy.updateMatrix();
                     this.chevronInstanced.setMatrixAt(i, dummy.matrix);
+                    this.chevronOutlineInstanced.setMatrixAt(i, dummy.matrix);
                 }
             }
             this.chevronInstanced.instanceMatrix.needsUpdate = true;
+            this.chevronOutlineInstanced.instanceMatrix.needsUpdate = true;
         }
 
         // ── Beacon billboard ──

@@ -553,6 +553,39 @@ html, body {
 }
 @keyframes urgentPulse { from { opacity: 0.8; } to { opacity: 1; } }
 
+/* Wrong Way Alert */
+.wrong-way-hidden { display: none !important; }
+#wrong-way-alert {
+    position: fixed; top: 12%; left: 50%; transform: translateX(-50%);
+    z-index: 90; align-items: center; justify-content: center;
+    width: 90%; max-width: 400px;
+    pointer-events: none;
+    animation: wrongWaySlideDown 0.4s cubic-bezier(0.34,1.56,0.64,1) both;
+}
+@keyframes wrongWaySlideDown { from { transform: translate(-50%, -100%); opacity: 0; } to { transform: translate(-50%, 0); opacity: 1; } }
+
+.wrong-way-inner {
+    background: linear-gradient(135deg, rgba(255, 30, 30, 0.95), rgba(200, 0, 0, 0.90));
+    border: 2px solid rgba(255, 100, 100, 0.8);
+    border-radius: 16px; padding: 14px 20px;
+    display: flex; align-items: center; gap: 14px;
+    box-shadow: 0 10px 30px rgba(255,0,0,0.6), 0 0 20px rgba(255,50,50,0.5);
+    backdrop-filter: blur(12px);
+    width: 100%;
+}
+.wrong-way-icon { font-size: 28px; animation: wrongWayPulse 0.5s infinite alternate; }
+@keyframes wrongWayPulse { from { transform: scale(0.9); opacity: 0.8; } to { transform: scale(1.15); opacity: 1; } }
+
+.wrong-way-text-group { display: flex; flex-direction: column; flex: 1; }
+.wrong-way-title { font-size: 18px; font-weight: 900; color: #fff; letter-spacing: 1px; line-height: 1.1; }
+.wrong-way-subtitle { font-size: 13px; font-weight: 600; color: #ffcccc; margin-top: 2px; line-height: 1.2; }
+
+.wrong-way-arrow { 
+    font-size: 32px; color: #fff; font-weight: bold;
+    text-shadow: 0 0 10px rgba(255,255,255,0.5);
+    transition: transform 0.3s ease;
+}
+
 /* Road Quality */
 .rq-hidden { display: none !important; }
 .rq-visible { display: flex !important; }

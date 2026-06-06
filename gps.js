@@ -25,7 +25,7 @@ window.GPS = {
     // Trip stats
     tripDistance: 0, tripStartTime: 0, maxSpeed: 0, speedSamples: [],
 
-    // Heading circular buffer (6 samples for faster response)
+    // Heading circular buffer (4 samples for extremely fast response)
     headingHistory: [],
 
     async init() {
@@ -135,7 +135,7 @@ window.GPS = {
 
         // Circular mean (6-sample buffer — faster response than 8)
         this.headingHistory.push(h);
-        if (this.headingHistory.length > 6) this.headingHistory.shift();
+        if (this.headingHistory.length > 4) this.headingHistory.shift();
 
         let sumX = 0, sumY = 0;
         for (let i = 0; i < this.headingHistory.length; i++) {
@@ -147,12 +147,14 @@ window.GPS = {
 
         this.heading = stableH;
         let d = this.heading - this.smoothHeading;
-        if (d > 180) this.smoothHeading += 360;
-        else if (d < -180) this.smoothHeading -= 360;
+        if (d > 180) d -= 360;
+        else if (d < -180) d += 360;
 
-        // Faster response alpha (0.25 moving, 0.12 stationary)
-        const alpha = this.speed > 0.5 ? 0.25 : 0.12;
-        this.smoothHeading += alpha * (this.heading - this.smoothHeading);
+        // Heading rate-of-change detector for sharp turns
+        const isSharpTurn = Math.abs(d) > 15; // >15 deg per frame means very sharp turn
+        const alpha = isSharpTurn ? 0.6 : (this.speed > 0.5 ? 0.25 : 0.12);
+
+        this.smoothHeading += alpha * d;
         if (this.smoothHeading >= 360) this.smoothHeading -= 360;
         else if (this.smoothHeading < 0) this.smoothHeading += 360;
 
@@ -177,11 +179,11 @@ window.GPS = {
                 this.bearing = this.calcBearing(this.lastRawLat, this.lastRawLon, lat, lon);
                 if (this.speed > 0.8 || d > 2.5) {
                     let bd = this.bearing - this.smoothHeading;
-                    if (bd > 180) this.smoothHeading += 360;
-                    else if (bd < -180) this.smoothHeading -= 360;
-                    // Stronger GPS bearing blend at speed (0.45 instead of 0.35)
-                    const bearingAlpha = this.speed > 5 ? 0.55 : 0.45;
-                    this.smoothHeading += bearingAlpha * (this.bearing - this.smoothHeading);
+                    if (bd > 180) bd -= 360;
+                    else if (bd < -180) bd += 360;
+                    // Stronger GPS bearing blend at speed (0.65 instead of 0.55)
+                    const bearingAlpha = this.speed > 5 ? 0.65 : 0.45;
+                    this.smoothHeading += bearingAlpha * bd;
                     if (this.smoothHeading >= 360) this.smoothHeading -= 360;
                     else if (this.smoothHeading < 0) this.smoothHeading += 360;
                     this.heading = this.smoothHeading;
@@ -265,10 +267,10 @@ window.GPS = {
             this.displayLat += dLat;
             this.displayLon += dLon;
 
-            // Faster correction towards Kalman GPS (8% per frame — prevents drift)
+            // Slower correction towards Kalman GPS (5% per frame — prevents DR overshoot on sharp turns)
             if (this.currentLat !== null) {
-                this.displayLat += (this.currentLat - this.displayLat) * 0.08;
-                this.displayLon += (this.currentLon - this.displayLon) * 0.08;
+                this.displayLat += (this.currentLat - this.displayLat) * 0.05;
+                this.displayLon += (this.currentLon - this.displayLon) * 0.05;
             }
         }
 
